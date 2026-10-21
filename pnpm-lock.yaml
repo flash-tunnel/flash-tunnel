@@ -205,9 +205,15 @@ importers:
       '@flash-tunnel/types':
         specifier: workspace:*
         version: link:../types
+      '@flash-tunnel/utils':
+        specifier: workspace:*
+        version: link:../utils
 
   packages/cli:
     dependencies:
+      '@flash-tunnel/adapter-cloudflare':
+        specifier: workspace:*
+        version: link:../adapter-cloudflare
       '@flash-tunnel/config':
         specifier: workspace:*
         version: link:../config

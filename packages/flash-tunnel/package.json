@@ -24,7 +24,10 @@
   "bin": {
     "flash-tunnel": "bin/flash-tunnel.mjs"
   },
-  "files": ["bin", "dist"],
+  "files": [
+    "bin",
+    "dist"
+  ],
   "engines": {
     "node": ">=22.14.0"
   },

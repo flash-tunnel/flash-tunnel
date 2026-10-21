@@ -16,7 +16,9 @@
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22.14.0"
   },
@@ -29,6 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@flash-tunnel/types": "workspace:*"
+    "@flash-tunnel/types": "workspace:*",
+    "@flash-tunnel/utils": "workspace:*"
   }
 }

@@ -9,7 +9,7 @@
 
 两者经常来自同一家（Cloudflare 的 CNAME → `<tunnel-id>.cfargotunnel.com`），但并不必然：自建 frp 可以用任意 DNS 建 CNAME；某些隧道直接分配域名（`*.trycloudflare.com`、ngrok 免费域名），根本不需要 DNS 步骤。
 
-因此契约拆成 `DnsAdapter` + `TunnelAdapter`，由编排器按隧道声明的 `requiresDns` 决定是否插入 DNS 步骤。**隧道声明「需要什么 DNS」，DNS 适配器声明「能做什么」，编排器校验两者是否匹配。**
+因此契约拆成 `DnsAdapter` + `TunnelAdapter`，由编排器按隧道声明的 DNS 需求（`requiresDns` 或 `handle.dns`）决定是否插入 DNS 步骤。**隧道声明「需要什么 DNS」，DNS 适配器声明「能做什么」，编排器校验两者是否匹配。**
 
 ## 公共约定
 
@@ -145,9 +145,9 @@ export interface TunnelCapabilities {
   modes: TunnelMode[]
   /** 期望域名由谁决定：custom=用户指定；assigned=供应商分配；both=两者皆可 */
   publicHostname: 'custom' | 'assigned' | 'both'
-  /** 是否需要外部 DNS 记录才能访问 */
+  /** 是否**无条件**需要外部 DNS 记录；按模式变化时填 false，由 handle.dns 决定 */
   requiresDns: boolean
-  /** 需要 DNS 时的具体要求；requiresDns=false 时可省略 */
+  /** 需要 DNS 时的具体要求；可通过 handle.dns 按模式返回 */
   dns?: {
     type: DnsRecordType
     /** 记录内容如何得到（由 handle.dns.target 提供） */
@@ -184,7 +184,7 @@ export interface TunnelHandle {
   name: string
   /** 供应商直接分配的访问地址（quick/assigned 模式） */
   publicUrl?: string
-  /** 需要创建的 DNS 记录；requiresDns=false 时为 undefined */
+  /** 需要创建的 DNS 记录；不需要时为 undefined */
   dns?: {
     type: DnsRecordType
     target: string
@@ -198,6 +198,8 @@ export interface TunnelHandle {
 export interface TunnelStatus {
   state: 'starting' | 'connected' | 'degraded' | 'stopped'
   connections: number
+  /** 供应商直接分配的访问地址（quick/assigned 模式） */
+  publicUrl?: string
   /** 供应商报告的边缘位置等诊断信息 */
   detail?: string
 }

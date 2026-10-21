@@ -137,6 +137,7 @@ export interface TunnelHandle {
 export interface TunnelStatus {
   state: 'starting' | 'connected' | 'degraded' | 'stopped'
   connections: number
+  publicUrl?: string
   detail?: string
 }
 

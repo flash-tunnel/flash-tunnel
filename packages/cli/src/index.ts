@@ -1,8 +1,10 @@
-import type { ServerHandle } from '@flash-tunnel/core'
+import type { PreviewSession } from '@flash-tunnel/core'
+import type { TunnelMode } from '@flash-tunnel/types'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { detectServer, loadFlashTunnelConfig, startServer } from '@flash-tunnel/core'
+import { createCloudflareTunnel } from '@flash-tunnel/adapter-cloudflare'
+import { loadFlashTunnelConfig, startPreviewSession } from '@flash-tunnel/core'
 import { cac } from 'cac'
 import { theme } from './ui/theme'
 
@@ -11,6 +13,8 @@ interface StartOptions {
   port?: string
   command?: string
   url?: string
+  mode?: string
+  verbose?: boolean
 }
 
 function readVersion(): string {
@@ -25,9 +29,9 @@ function readVersion(): string {
   }
 }
 
-type StopReason = 'exit' | 'SIGINT' | 'SIGTERM'
+type StopReason = 'SIGINT' | 'SIGTERM' | 'server-exit' | 'tunnel-exit'
 
-function waitForStop(handle: ServerHandle): Promise<StopReason> {
+function waitForStop(session: PreviewSession): Promise<StopReason> {
   return new Promise((resolveStop) => {
     let finish: (reason: StopReason) => void = (): void => {}
 
@@ -41,8 +45,19 @@ function waitForStop(handle: ServerHandle): Promise<StopReason> {
 
     process.once('SIGINT', onSignal)
     process.once('SIGTERM', onSignal)
-    handle.exited?.then(() => finish('exit'))
+    session.exited.then(() => finish('tunnel-exit'))
+    session.server.exited?.then(() => finish('server-exit'))
   })
+}
+
+function parseMode(value: string | undefined): TunnelMode {
+  if (!value) {
+    return 'quick'
+  }
+  if (value === 'quick' || value === 'named') {
+    return value
+  }
+  throw new Error(`Invalid tunnel mode "${value}". Use "quick" or "named".`)
 }
 
 async function startPreview(options: StartOptions): Promise<void> {
@@ -53,34 +68,37 @@ async function startPreview(options: StartOptions): Promise<void> {
     process.stdout.write(`${theme.dim('config')} ${source}\n`)
   }
 
-  const overrides = { ...config.server }
-  if (options.port !== undefined) {
-    overrides.port = Number(options.port)
-  }
-  if (options.command) {
-    overrides.command = options.command
-  }
-  if (options.url) {
-    overrides.url = options.url
-  }
+  const provider = config.providers?.cloudflare as
+    | { accountId?: string, cloudflaredPath?: string }
+    | undefined
 
-  const plan = detectServer(cwd, overrides)
-  const target = plan.mode === 'static' ? plan.dir : plan.command
-  process.stdout.write(`${theme.ok('✔')} ${theme.dim(plan.reason)} ${target ?? ''}\n`)
-
-  const handle = await startServer(plan, {
-    timeoutMs: overrides.timeout ?? 60_000,
-    onLog: (line) => {
-      process.stderr.write(`${theme.dim('[web]')} ${line}\n`)
-    }
+  const tunnel = createCloudflareTunnel({
+    cloudflaredPath: process.env.FLASH_TUNNEL_CLOUDFLARED ?? provider?.cloudflaredPath,
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? provider?.accountId,
+    apiToken: process.env.CLOUDFLARE_API_TOKEN
   })
 
-  process.stdout.write(`${theme.ok('✔')} local ${theme.url(handle.url)} ${theme.dim(handle.startedByUs ? '(started)' : '(reused)')}\n`)
-  process.stdout.write(`${theme.dim('Tunnel orchestration is not implemented yet; press Ctrl+C to stop.')}\n`)
+  const session = await startPreviewSession({
+    cwd,
+    config,
+    adapters: { tunnel },
+    mode: parseMode(options.mode),
+    onLog: options.verbose
+      ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
+      : undefined
+  })
 
-  const reason = await waitForStop(handle)
+  process.stdout.write(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
+  process.stdout.write(`${theme.ok('✔')} public ${theme.url(session.publicUrl)}\n`)
+  process.stdout.write(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 
-  if (reason === 'exit') {
+  const reason = await waitForStop(session)
+
+  if (reason === 'tunnel-exit') {
+    process.stderr.write(`${theme.err('✖')} cloudflared exited unexpectedly\n`)
+    process.exitCode = 5
+  }
+  else if (reason === 'server-exit') {
     process.stderr.write(`${theme.err('✖')} dev server exited unexpectedly\n`)
     process.exitCode = 3
   }
@@ -88,7 +106,7 @@ async function startPreview(options: StartOptions): Promise<void> {
     process.stdout.write(`${theme.dim('Stopping...')}\n`)
   }
 
-  await handle.stop()
+  await session.stop()
 }
 
 async function runStart(options: StartOptions = {}): Promise<void> {
@@ -111,6 +129,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
+    .option('--mode <mode>', 'Tunnel mode: quick or named')
+    .option('--verbose', 'Stream dev server and cloudflared logs')
     .action((_root: unknown, options: StartOptions = {}) => runStart(options))
 
   cli
@@ -119,6 +139,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
+    .option('--mode <mode>', 'Tunnel mode: quick or named')
+    .option('--verbose', 'Stream dev server and cloudflared logs')
     .action((options: StartOptions = {}) => runStart(options))
 
   cli.help()
