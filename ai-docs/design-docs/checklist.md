@@ -154,7 +154,7 @@
 - [x] prompts 取消（`ExitPromptError`）路径测试
 - [x] 集成测试（fake 适配器 + 真实子进程信号）
 - [x] Windows 进程树停止测试
-- [ ] E2E（gated）创建 → 验证 → 清理 → 断言无残留
+- [x] E2E（gated）创建 → 验证 → 清理 → 断言无残留
 - [x] kill -9 恢复测试
 - [ ] release verify 矩阵通过（tag 触发）
 
