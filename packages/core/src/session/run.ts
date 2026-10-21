@@ -601,7 +601,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     try {
       verified = await verifyPublicUrl(publicUrl, {
         timeoutMs: options.verifyTimeoutMs ?? 60_000,
-        signal: options.signal
+        signal: options.signal,
+        diagnoseDns: true
       })
     }
     catch (error) {
