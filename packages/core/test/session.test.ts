@@ -2,11 +2,20 @@ import type { DnsAdapter, DnsRecordRef, TunnelAdapter } from '@flash-tunnel/type
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { startPreviewSession } from '../src'
+import process from 'node:process'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { readSessionState, startPreviewSession } from '../src'
 
 const directories: string[] = []
 const sessions: Array<{ stop: () => Promise<void> }> = []
+let home: string
+let previousHome: string | undefined
+
+beforeEach(async () => {
+  previousHome = process.env.FLASH_TUNNEL_HOME
+  home = await mkdtemp(join(tmpdir(), 'flash-tunnel-home-'))
+  process.env.FLASH_TUNNEL_HOME = home
+})
 
 async function createDirectory(files: Record<string, string>): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'flash-tunnel-session-'))
@@ -135,6 +144,13 @@ function createFakeTunnelWithDns(sequence: string[]): TunnelAdapter {
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map(session => session.stop().catch(() => {})))
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+  if (previousHome === undefined) {
+    delete process.env.FLASH_TUNNEL_HOME
+  }
+  else {
+    process.env.FLASH_TUNNEL_HOME = previousHome
+  }
+  await rm(home, { recursive: true, force: true })
 })
 
 describe('startPreviewSession', () => {
@@ -166,10 +182,18 @@ describe('startPreviewSession', () => {
     expect(session.localUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(session.publicUrl).toBe(session.localUrl)
 
+    const state = await readSessionState(cwd)
+    expect(state).toMatchObject({
+      sessionId: session.sessionId,
+      state: 'running'
+    })
+    expect(state?.tunnel?.provider).toBe('fake')
+
     const response = await fetch(session.publicUrl)
     expect(await response.text()).toBe('session-ok')
 
     await session.stop()
+    expect(await readSessionState(cwd)).toBeUndefined()
     await expect(fetch(session.localUrl)).rejects.toThrow()
   })
 

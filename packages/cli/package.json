@@ -34,6 +34,8 @@
     "@flash-tunnel/adapter-cloudflare": "workspace:*",
     "@flash-tunnel/config": "workspace:*",
     "@flash-tunnel/core": "workspace:*",
+    "@flash-tunnel/types": "workspace:*",
+    "@flash-tunnel/utils": "workspace:*",
     "cac": "^7.0.0"
   }
 }

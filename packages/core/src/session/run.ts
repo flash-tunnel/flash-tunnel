@@ -9,10 +9,18 @@ import type {
   TunnelMode
 } from '@flash-tunnel/types'
 import type { ServerHandle } from '../server/types'
+import type { SessionState } from '../state/store'
 import { basename } from 'node:path'
+import process from 'node:process'
 import { randomId, slugify } from '@flash-tunnel/utils'
 import { detectServer } from '../server/detect'
 import { startServer } from '../server/run'
+import {
+  acquireProjectLock,
+  releaseProjectLock,
+  removeSessionState,
+  writeSessionState
+} from '../state/store'
 import { verifyPublicUrl } from '../tunnel/verify'
 import { createSessionId } from './id'
 
@@ -31,6 +39,10 @@ export interface StartPreviewSessionOptions {
   signal?: AbortSignal
   onLog?: (line: string, stream: 'stdout' | 'stderr') => void
   verifyTimeoutMs?: number
+  persist?: boolean
+  keep?: boolean
+  autoStopAfterMs?: number
+  configSource?: string
 }
 
 export interface PreviewSession {
@@ -42,7 +54,23 @@ export interface PreviewSession {
   tunnel: TunnelHandle
   dns?: DnsRecordRef
   exited: Promise<void>
+  autoStopped?: Promise<void>
   stop: () => Promise<void>
+}
+
+export interface CleanupFailure {
+  step: string
+  error: string
+}
+
+export class CleanupError extends Error {
+  readonly failures: CleanupFailure[]
+
+  constructor(failures: CleanupFailure[]) {
+    super(`Cleanup failed: ${failures.map(failure => `${failure.step} (${failure.error})`).join(', ')}`)
+    this.name = 'CleanupError'
+    this.failures = failures
+  }
 }
 
 function createLogger(onLog?: StartPreviewSessionOptions['onLog']): AdapterLogger {
@@ -58,15 +86,43 @@ function createLogger(onLog?: StartPreviewSessionOptions['onLog']): AdapterLogge
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 export async function startPreviewSession(options: StartPreviewSessionOptions): Promise<PreviewSession> {
   const { cwd, config, adapters } = options
   const mode: TunnelMode = options.mode ?? config.tunnel?.mode ?? 'quick'
+  const persist = options.persist ?? true
 
   if (!adapters.tunnel.capabilities.modes.includes(mode)) {
     throw new Error(`Tunnel adapter "${adapters.tunnel.id}" does not support mode "${mode}"`)
   }
 
   const sessionId = createSessionId()
+  let state: SessionState | undefined
+  let lockAcquired = false
+
+  if (persist) {
+    await acquireProjectLock(cwd, sessionId)
+    lockAcquired = true
+
+    const now = new Date().toISOString()
+    state = {
+      version: 1,
+      sessionId,
+      pid: process.pid,
+      projectRoot: cwd,
+      startedAt: now,
+      heartbeatAt: now,
+      state: 'starting',
+      configSource: options.configSource,
+      server: { cwd, startedByUs: false },
+      cleanup: { required: false, attempts: 0, inProgress: false, kept: false }
+    }
+    await writeSessionState(state)
+  }
+
   const plan = detectServer(cwd, config.server)
   const server = await startServer(plan, {
     timeoutMs: config.server?.timeout,
@@ -86,24 +142,113 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   let handle: TunnelHandle | undefined
   let dnsRef: DnsRecordRef | undefined
   let tunnelStarted = false
+  let stopPromise: Promise<void> | undefined
+  let heartbeatTimer: NodeJS.Timeout | undefined
+  let autoStopTimer: NodeJS.Timeout | undefined
   let resolveTunnelExit: () => void = () => {}
+  let resolveAutoStopped: () => void = () => {}
   const tunnelExited = new Promise<void>((resolve) => {
     resolveTunnelExit = resolve
   })
 
-  const cleanup = async (): Promise<void> => {
+  const cleanup = async (): Promise<CleanupFailure[]> => {
+    const failures: CleanupFailure[] = []
+
     if (handle) {
       if (tunnelStarted) {
-        await adapters.tunnel.stop(ctx, handle).catch(() => {})
+        try {
+          await adapters.tunnel.stop(ctx, handle)
+        }
+        catch (error) {
+          failures.push({ step: 'tunnel.stop', error: errorMessage(error) })
+        }
         tunnelStarted = false
       }
-      if (dnsRef && adapters.dns) {
-        await adapters.dns.remove(ctx, dnsRef).catch(() => {})
-        dnsRef = undefined
+
+      if (!options.keep && dnsRef && adapters.dns) {
+        try {
+          await adapters.dns.remove(ctx, dnsRef)
+          dnsRef = undefined
+        }
+        catch (error) {
+          failures.push({ step: 'dns.remove', error: errorMessage(error) })
+        }
       }
-      await adapters.tunnel.deprovision(ctx, handle).catch(() => {})
-      handle = undefined
+
+      if (!options.keep) {
+        try {
+          await adapters.tunnel.deprovision(ctx, handle)
+          handle = undefined
+        }
+        catch (error) {
+          failures.push({ step: 'tunnel.deprovision', error: errorMessage(error) })
+        }
+      }
     }
+
+    try {
+      await server.stop()
+    }
+    catch (error) {
+      failures.push({ step: 'server.stop', error: errorMessage(error) })
+    }
+
+    return failures
+  }
+
+  const stop = async (): Promise<void> => {
+    if (stopPromise) {
+      return stopPromise
+    }
+
+    stopPromise = (async () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer)
+        heartbeatTimer = undefined
+      }
+      if (autoStopTimer) {
+        clearTimeout(autoStopTimer)
+        autoStopTimer = undefined
+      }
+
+      if (state) {
+        state.state = 'tearing-down'
+        state.cleanup.inProgress = true
+        await writeSessionState(state).catch(() => {})
+      }
+
+      const failures = await cleanup()
+
+      if (persist && state) {
+        if (failures.length > 0) {
+          state.cleanup.required = true
+          state.cleanup.attempts += 1
+          state.cleanup.inProgress = false
+          state.state = 'failed'
+          await writeSessionState(state).catch(() => {})
+        }
+        else if (options.keep) {
+          state.cleanup.kept = true
+          state.cleanup.inProgress = false
+          state.state = 'kept'
+          await writeSessionState(state).catch(() => {})
+        }
+        else {
+          await removeSessionState(state).catch(() => {})
+        }
+      }
+
+      if (lockAcquired) {
+        await releaseProjectLock(cwd, sessionId).catch(() => {})
+        lockAcquired = false
+      }
+
+      if (failures.length > 0) {
+        throw new CleanupError(failures)
+      }
+    })()
+
+    return stopPromise
   }
 
   try {
@@ -113,6 +258,25 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       localUrl: server.url,
       hostname: options.hostname
     })
+
+    if (state) {
+      state.server = {
+        url: server.url,
+        command: plan.command,
+        cwd: plan.cwd,
+        startedByUs: server.startedByUs
+      }
+      state.tunnel = {
+        provider: handle.provider,
+        tunnelId: handle.tunnelId,
+        name: handle.name,
+        publicUrl: handle.publicUrl,
+        mode,
+        accountId: handle.meta?.accountId
+      }
+      state.state = 'tunnel-provisioned'
+      await writeSessionState(state)
+    }
 
     if (handle.dns) {
       if (!adapters.dns) {
@@ -136,6 +300,17 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         ttl: 1,
         comment: `flash-tunnel:${sessionId}`
       })
+
+      if (state) {
+        state.dns = {
+          provider: dnsRef.provider,
+          zoneId: dnsRef.zoneId,
+          recordId: dnsRef.recordId,
+          hostname: dnsRef.name
+        }
+        state.state = 'dns-created'
+        await writeSessionState(state)
+      }
     }
 
     await adapters.tunnel.start(ctx, handle, {
@@ -159,7 +334,36 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       signal: options.signal
     })
 
-    let stopped = false
+    if (state) {
+      state.state = 'running'
+      if (state.tunnel) {
+        state.tunnel.publicUrl = publicUrl
+      }
+      await writeSessionState(state)
+
+      heartbeatTimer = setInterval(() => {
+        if (!state) {
+          return
+        }
+        state.heartbeatAt = new Date().toISOString()
+        void writeSessionState(state).catch(() => {})
+      }, 15_000)
+      heartbeatTimer.unref()
+    }
+
+    let autoStopped: Promise<void> | undefined
+    if (options.autoStopAfterMs && options.autoStopAfterMs > 0) {
+      autoStopped = new Promise<void>((resolve) => {
+        resolveAutoStopped = resolve
+      })
+      autoStopTimer = setTimeout(() => {
+        stop()
+          .catch(() => {})
+          .finally(() => resolveAutoStopped())
+      }, options.autoStopAfterMs)
+      autoStopTimer.unref()
+    }
+
     return {
       sessionId,
       localUrl: server.url,
@@ -169,19 +373,34 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       tunnel: handle,
       dns: dnsRef,
       exited: tunnelExited,
-      stop: async () => {
-        if (stopped) {
-          return
-        }
-        stopped = true
-        await cleanup()
-        await server.stop()
-      }
+      autoStopped,
+      stop
     }
   }
   catch (error) {
-    await cleanup()
-    await server.stop().catch(() => {})
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+    }
+    if (autoStopTimer) {
+      clearTimeout(autoStopTimer)
+    }
+
+    const failures = await cleanup()
+    if (persist && state) {
+      if (failures.length > 0) {
+        state.cleanup.required = true
+        state.state = 'failed'
+        await writeSessionState(state).catch(() => {})
+      }
+      else {
+        await removeSessionState(state).catch(() => {})
+      }
+      if (lockAcquired) {
+        await releaseProjectLock(cwd, sessionId).catch(() => {})
+        lockAcquired = false
+      }
+    }
+
     throw error
   }
 }

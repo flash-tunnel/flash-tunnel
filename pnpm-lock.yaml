@@ -220,6 +220,12 @@ importers:
       '@flash-tunnel/core':
         specifier: workspace:*
         version: link:../core
+      '@flash-tunnel/types':
+        specifier: workspace:*
+        version: link:../types
+      '@flash-tunnel/utils':
+        specifier: workspace:*
+        version: link:../utils
       cac:
         specifier: ^7.0.0
         version: 7.1.0
