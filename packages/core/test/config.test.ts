@@ -65,4 +65,19 @@ describe('loadFlashTunnelConfig', () => {
 
     await expect(loadFlashTunnelConfig(cwd)).rejects.toThrow(/config object/)
   })
+
+  it('loads an explicit config path', async () => {
+    const cwd = await createDirectory({
+      'config/preview.ts': 'export default { tunnel: { mode: "quick" } }'
+    })
+
+    const loaded = await loadFlashTunnelConfig(cwd, { config: 'config/preview.ts' })
+    expect(loaded.config.tunnel?.mode).toBe('quick')
+    expect(loaded.source).toContain('preview.ts')
+  })
+
+  it('rejects a missing explicit config path', async () => {
+    const cwd = await createDirectory()
+    await expect(loadFlashTunnelConfig(cwd, { config: 'nope.ts' })).rejects.toThrow(/Config file not found/)
+  })
 })

@@ -27,6 +27,7 @@ export interface DoctorCheck {
 
 export interface DoctorOptions {
   cwd?: string
+  config?: string
 }
 
 const MINIMUM_NODE = [22, 14, 0] as const
@@ -209,7 +210,7 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
       })
 
   let config: Awaited<ReturnType<typeof loadFlashTunnelConfig>>['config'] = {}
-  const configFile = findConfigFile(cwd)
+  const configFile = options.config ? resolve(cwd, options.config) : findConfigFile(cwd)
   if (!configFile) {
     checks.push({
       id: 'config',
@@ -219,7 +220,7 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
   }
   else {
     try {
-      const loaded = await loadFlashTunnelConfig(cwd)
+      const loaded = await loadFlashTunnelConfig(cwd, { config: options.config })
       config = loaded.config
       checks.push({ id: 'config', level: 'ok', message: `Loaded ${configFile}` })
     }

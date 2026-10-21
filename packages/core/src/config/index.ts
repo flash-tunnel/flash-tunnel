@@ -7,11 +7,26 @@ import { loadConfig } from 'unconfig'
 
 const require = createRequire(import.meta.url)
 
+export { resolveConfig } from './resolve'
+export type {
+  ConfigSource,
+  ConfigSourceInfo,
+  ConfigSources,
+  ResolveConfigInput,
+  ResolvedConfig,
+  ResolvedConfigValues
+} from './resolve'
+
 const CONFIG_FILE = 'flash-tunnel.ts'
 
 export interface LoadedFlashTunnelConfig {
   config: FlashTunnelConfig
   source?: string
+}
+
+export interface LoadFlashTunnelConfigOptions {
+  /** Explicit flash-tunnel.ts path; relative paths resolve from cwd. */
+  config?: string
 }
 
 export function findConfigFile(startDirectory: string): string | undefined {
@@ -41,18 +56,25 @@ function createConfigTransform(): (code: string) => string {
     .replace(/(from\s*)(['"])@flash-tunnel\/config\2/g, `$1'${shim}'`)
 }
 
-export async function loadFlashTunnelConfig(cwd: string): Promise<LoadedFlashTunnelConfig> {
-  const configPath = findConfigFile(cwd)
+export async function loadFlashTunnelConfig(
+  cwd: string,
+  options: LoadFlashTunnelConfigOptions = {}
+): Promise<LoadedFlashTunnelConfig> {
+  const configPath = options.config ? resolve(cwd, options.config) : findConfigFile(cwd)
   if (!configPath) {
     return { config: {} }
   }
+  if (!existsSync(configPath)) {
+    throw new Error(`Config file not found: ${configPath}`)
+  }
 
+  const file = parse(configPath)
   const loaded = await loadConfig<FlashTunnelConfig>({
-    cwd: dirname(configPath),
+    cwd: file.dir,
     merge: false,
     sources: [{
-      files: 'flash-tunnel',
-      extensions: ['ts'],
+      files: file.name,
+      extensions: [file.ext.replace(/^\./, '') || 'ts'],
       transform: createConfigTransform()
     }]
   })

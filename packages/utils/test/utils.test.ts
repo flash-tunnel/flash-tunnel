@@ -32,6 +32,8 @@ describe('formatDuration', () => {
     expect(formatDuration(1200)).toBe('1.2s')
     expect(formatDuration(2000)).toBe('2s')
     expect(formatDuration(63_000)).toBe('1m 3s')
+    expect(formatDuration(7_200_000)).toBe('2h')
+    expect(formatDuration(5_400_000)).toBe('1h 30m')
   })
 })
 

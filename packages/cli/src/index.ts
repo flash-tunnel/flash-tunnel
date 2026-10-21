@@ -1,5 +1,6 @@
-import type { CleanSessionResult, PreviewSession, SessionCleaner, SessionState } from '@flash-tunnel/core'
-import type { FlashTunnelEvents, TunnelMode } from '@flash-tunnel/types'
+import type { FlashTunnelConfig } from '@flash-tunnel/config'
+import type { CleanSessionResult, PreviewSession, ResolvedConfig, SessionCleaner, SessionState } from '@flash-tunnel/core'
+import type { FlashTunnelEvents } from '@flash-tunnel/types'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -9,6 +10,7 @@ import {
   cleanSession,
   cleanSessions,
   CleanupError,
+  detectServer,
   Emitter,
   findStaleSessions,
   FlashTunnelError,
@@ -17,11 +19,11 @@ import {
   loadFlashTunnelConfig,
   ProjectLockedError,
   reapSession,
-  resolveHostname,
+  resolveConfig,
   startPreviewSession
 } from '@flash-tunnel/core'
 import { AdapterError } from '@flash-tunnel/types'
-import { parseDuration } from '@flash-tunnel/utils'
+import { formatDuration } from '@flash-tunnel/utils'
 import { cac } from 'cac'
 import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
@@ -31,12 +33,15 @@ import { theme, themeStderr } from './ui/theme'
 
 interface StartOptions {
   cwd?: string
+  config?: string
   port?: string
   command?: string
   url?: string
   mode?: string
   zone?: string
   hostname?: string
+  subdomain?: string
+  dryRun?: boolean
   verbose?: boolean
   keep?: boolean
   autoStop?: string
@@ -70,6 +75,7 @@ interface InitCommandOptions {
 
 interface DoctorCommandOptions {
   cwd?: string
+  config?: string
   json?: boolean
   silent?: boolean
 }
@@ -178,20 +184,6 @@ function installExitReaper(): void {
   })
 }
 
-function parseMode(value: string | undefined): TunnelMode {
-  if (!value) {
-    return 'named'
-  }
-  if (value === 'quick' || value === 'named') {
-    return value
-  }
-  throw new FlashTunnelError(`Invalid tunnel mode "${value}"`, {
-    code: 'INVALID_MODE',
-    exitCode: 2,
-    hint: 'Use "quick" for a temporary trycloudflare.com domain or "named" for a custom domain'
-  })
-}
-
 function createCleaner(): SessionCleaner | undefined {
   const apiToken = process.env.CLOUDFLARE_API_TOKEN
   if (!apiToken) {
@@ -269,12 +261,97 @@ async function sweepStale(projectRoot: string, reporter: Reporter): Promise<void
   }
 }
 
+function printEffectiveConfig(resolved: ResolvedConfig, reporter: Reporter): void {
+  reporter.event({
+    type: 'dry-run',
+    configFile: resolved.configFile ?? null,
+    config: resolved.values,
+    sources: resolved.sources,
+    warnings: resolved.warnings
+  })
+
+  if (reporter.json) {
+    return
+  }
+
+  reporter.human(`${theme.bold('Effective configuration')}${resolved.configFile ? `  ${theme.dim(resolved.configFile)}` : ''}\n`)
+
+  const rows: Array<[string, string | number | undefined]> = [
+    ['domain.zone', resolved.values.domain.zone],
+    ['domain.hostname', resolved.values.domain.hostname],
+    ['domain.provider', resolved.values.domain.provider],
+    ['domain.subdomain', resolved.values.domain.subdomain],
+    ['server.command', resolved.values.server.command],
+    ['server.cwd', resolved.values.server.cwd],
+    ['server.port', resolved.values.server.port],
+    ['server.url', resolved.values.server.url],
+    ['server.dir', resolved.values.server.dir],
+    ['server.timeout', resolved.values.server.timeout],
+    ['tunnel.provider', resolved.values.tunnel.provider],
+    ['tunnel.mode', resolved.values.tunnel.mode],
+    ['tunnel.name', resolved.values.tunnel.name],
+    ['providers.cloudflare.accountId', resolved.values.providers.cloudflare.accountId],
+    ['providers.cloudflare.zoneId', resolved.values.providers.cloudflare.zoneId],
+    ['providers.cloudflare.cloudflaredPath', resolved.values.providers.cloudflare.cloudflaredPath],
+    ['autoStopAfter', resolved.values.autoStopAfter === undefined ? 'off' : formatDuration(resolved.values.autoStopAfter)]
+  ]
+
+  for (const [key, value] of rows) {
+    const info = resolved.sources[key]
+    const source = info
+      ? theme.dim(`(${info.source}${info.note ? `: ${info.note}` : ''})`)
+      : ''
+    reporter.human(`  ${key.padEnd(32)} ${String(value ?? '-').padEnd(28)} ${source}\n`)
+  }
+
+  for (const warning of resolved.warnings) {
+    reporter.warn(warning)
+  }
+}
+
+function buildEffectiveConfig(
+  config: FlashTunnelConfig,
+  resolved: ResolvedConfig
+): FlashTunnelConfig {
+  return {
+    ...config,
+    domain: {
+      ...config.domain,
+      provider: resolved.values.domain.provider,
+      zone: resolved.values.domain.zone,
+      subdomain: resolved.values.domain.subdomain
+    },
+    server: {
+      command: resolved.values.server.command,
+      cwd: resolved.values.server.cwd,
+      port: resolved.values.server.port,
+      url: resolved.values.server.url,
+      dir: resolved.values.server.dir,
+      timeout: resolved.values.server.timeout
+    },
+    tunnel: {
+      ...config.tunnel,
+      provider: resolved.values.tunnel.provider,
+      mode: resolved.values.tunnel.mode,
+      name: resolved.values.tunnel.name
+    },
+    providers: {
+      ...config.providers,
+      cloudflare: {
+        ...config.providers?.cloudflare,
+        ...resolved.values.providers.cloudflare
+      }
+    },
+    autoStopAfter: resolved.values.autoStopAfter
+  }
+}
+
 async function startPreview(options: StartOptions, reporter: Reporter): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
 
   let loaded: Awaited<ReturnType<typeof loadFlashTunnelConfig>>
   try {
-    loaded = await loadFlashTunnelConfig(cwd)
+    loaded = await loadFlashTunnelConfig(cwd, { config: options.config })
   }
   catch (error) {
     throw new FlashTunnelError(`Failed to load flash-tunnel.ts: ${errorMessage(error)}`, {
@@ -290,27 +367,33 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     reporter.log(`${theme.dim('config')} ${source}\n`)
   }
 
-  if (!options.noSweep && options.sweep !== false) {
+  if (!options.dryRun && !options.noSweep && options.sweep !== false) {
     await sweepStale(cwd, reporter).catch((error) => {
       reporter.warn(`sweep failed: ${errorMessage(error)}`)
     })
   }
 
-  const provider = config.providers?.cloudflare as
-    | {
-      accountId?: string
-      cloudflaredPath?: string
-      zoneId?: string
-      originRequest?: { httpHostHeader?: string, noTLSVerify?: boolean }
-    }
-    | undefined
-
-  const mode = parseMode(options.mode ?? config.tunnel?.mode)
   const apiToken = process.env.CLOUDFLARE_API_TOKEN
   const apiBase = process.env.FLASH_TUNNEL_CLOUDFLARE_API_BASE
-  let zone = options.zone ?? process.env.FLASH_TUNNEL_ZONE ?? config.domain?.zone
+  const cliConfig = {
+    zone: options.zone,
+    hostname: options.hostname,
+    subdomain: options.subdomain,
+    mode: options.mode,
+    command: options.command,
+    port: options.port,
+    url: options.url,
+    autoStop: options.autoStop
+  }
 
-  if (mode === 'named' && !apiToken) {
+  const preliminary = resolveConfig({
+    cwd,
+    config,
+    configFile: source,
+    cli: cliConfig
+  })
+
+  if (preliminary.values.tunnel.mode === 'named' && !apiToken && !options.dryRun) {
     throw new FlashTunnelError('Named mode requires CLOUDFLARE_API_TOKEN', {
       code: 'AUTH_MISSING',
       exitCode: 4,
@@ -318,75 +401,95 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     })
   }
 
-  if (mode === 'named' && !zone && apiToken) {
+  let inferredZone: string | undefined
+  let zoneIssue: string | undefined
+  if (preliminary.values.tunnel.mode === 'named' && !preliminary.values.domain.zone && apiToken) {
     const api = new CloudflareApi({ apiToken, apiBase })
     const zones = (await api.listZones()).filter(item => item.status === 'active')
-
     if (zones.length === 1 && zones[0]) {
-      zone = zones[0].name
+      inferredZone = zones[0].name
     }
     else if (zones.length === 0) {
-      throw new FlashTunnelError('No active Cloudflare zone found', {
-        code: 'ZONE_NOT_FOUND',
-        exitCode: 2,
-        hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
-      })
+      zoneIssue = 'No active Cloudflare zone is visible to this token'
     }
     else {
-      throw new FlashTunnelError(`Multiple zones found (${zones.map(item => item.name).join(', ')})`, {
-        code: 'ZONE_AMBIGUOUS',
-        exitCode: 2,
-        hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
-      })
+      zoneIssue = `Multiple zones found (${zones.map(item => item.name).join(', ')})`
     }
   }
 
+  let detected: { command?: string, port?: number, framework?: string, reason?: string } | undefined
+  let detectionError: unknown
+  try {
+    const plan = detectServer(cwd, {
+      cwd: preliminary.values.server.cwd,
+      command: preliminary.values.server.command,
+      port: preliminary.values.server.port,
+      url: preliminary.values.server.url,
+      dir: preliminary.values.server.dir,
+      timeout: preliminary.values.server.timeout
+    })
+    detected = {
+      command: plan.command,
+      port: plan.port,
+      framework: plan.framework,
+      reason: plan.reason
+    }
+  }
+  catch (error) {
+    detectionError = error
+  }
+
+  const resolved = resolveConfig({
+    cwd,
+    config,
+    configFile: source,
+    cli: cliConfig,
+    detected,
+    ...(inferredZone ? { inferredZone } : {})
+  })
+
+  if (detectionError) {
+    resolved.warnings.push(`Server detection failed: ${errorMessage(detectionError)}`)
+  }
+  for (const warning of resolved.warnings) {
+    reporter.warn(warning)
+  }
+
+  if (options.dryRun) {
+    printEffectiveConfig(resolved, reporter)
+    return
+  }
+
+  const mode = resolved.values.tunnel.mode
+  const zone = resolved.values.domain.zone
+
   if (mode === 'named' && !zone) {
-    throw new FlashTunnelError('Named mode requires a zone', {
-      code: 'ZONE_REQUIRED',
+    throw new FlashTunnelError(zoneIssue ?? 'Named mode requires a zone', {
+      code: zoneIssue ? 'ZONE_NOT_FOUND' : 'ZONE_REQUIRED',
       exitCode: 2,
       hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
     })
   }
 
-  const hostname = mode === 'named' && zone
-    ? options.hostname
-    ?? process.env.FLASH_TUNNEL_HOSTNAME
-    ?? resolveHostname({
-      cwd,
-      zone,
-      subdomain: config.domain?.subdomain
-    })
-    : undefined
+  const hostname = mode === 'named' ? resolved.values.domain.hostname : undefined
+  const autoStopAfterMs = resolved.values.autoStopAfter
+  const effectiveConfig = buildEffectiveConfig(config, resolved)
 
   const tunnel = createCloudflareTunnel({
-    cloudflaredPath: process.env.FLASH_TUNNEL_CLOUDFLARED ?? provider?.cloudflaredPath,
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? provider?.accountId,
+    cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
+    accountId: resolved.values.providers.cloudflare.accountId,
     apiToken,
     apiBase,
-    originRequest: provider?.originRequest
+    originRequest: resolved.values.providers.cloudflare.originRequest
   })
 
   const dns = mode === 'named' && apiToken
     ? createCloudflareDns({
         apiToken,
-        zoneId: process.env.CLOUDFLARE_ZONE_ID ?? provider?.zoneId,
+        zoneId: resolved.values.providers.cloudflare.zoneId,
         apiBase
       })
     : undefined
-
-  const autoStopValue = options.autoStop ?? config.autoStopAfter
-  let autoStopAfterMs: number | undefined
-  try {
-    autoStopAfterMs = autoStopValue === undefined ? undefined : parseDuration(autoStopValue)
-  }
-  catch (error) {
-    throw new FlashTunnelError(`Invalid auto-stop duration: ${errorMessage(error)}`, {
-      code: 'INVALID_DURATION',
-      exitCode: 2,
-      hint: 'Use a value like 30m, 2h or 90s'
-    })
-  }
 
   const events = new Emitter<FlashTunnelEvents>()
   events.on('server:ready', payload => reporter.event({
@@ -444,7 +547,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   try {
     session = await startPreviewSession({
       cwd,
-      config,
+      config: effectiveConfig,
       adapters: { tunnel, dns },
       mode,
       hostname,
@@ -794,18 +897,21 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
   cli
     .command('[root]', 'Start a temporary public preview')
     .option('--cwd <dir>', 'Project directory')
+    .option('--config <path>', 'Path to flash-tunnel.ts')
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')
+    .option('--subdomain <label>', 'Subdomain label or template')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
     .option('--json', 'Machine-readable NDJSON on stdout')
     .option('--silent', 'Only print errors')
+    .option('--dry-run', 'Print the effective configuration and exit')
     .option('--ready-file <path>', 'Write the ready payload to a file')
     .option('--on-ready <command>', 'Run a command once the preview is ready')
     .option('--no-open', 'Do not open the preview in a browser')
@@ -816,18 +922,21 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
   cli
     .command('start', 'Start a temporary public preview')
     .option('--cwd <dir>', 'Project directory')
+    .option('--config <path>', 'Path to flash-tunnel.ts')
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')
+    .option('--subdomain <label>', 'Subdomain label or template')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
     .option('--json', 'Machine-readable NDJSON on stdout')
     .option('--silent', 'Only print errors')
+    .option('--dry-run', 'Print the effective configuration and exit')
     .option('--ready-file <path>', 'Write the ready payload to a file')
     .option('--on-ready <command>', 'Run a command once the preview is ready')
     .option('--no-open', 'Do not open the preview in a browser')
@@ -851,6 +960,7 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
   cli
     .command('doctor', 'Check the environment and configuration')
     .option('--cwd <dir>', 'Project directory')
+    .option('--config <path>', 'Path to flash-tunnel.ts')
     .option('--json', 'Machine-readable NDJSON on stdout')
     .option('--silent', 'Only print errors')
     .action((options: DoctorCommandOptions = {}) => runDoctorCommand(options))

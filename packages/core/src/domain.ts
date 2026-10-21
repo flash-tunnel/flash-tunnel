@@ -2,11 +2,17 @@ import { execFileSync } from 'node:child_process'
 import { basename } from 'node:path'
 import { randomId, slugify } from '@flash-tunnel/utils'
 
-export interface ResolveHostnameOptions {
+export interface RenderSubdomainOptions {
   cwd: string
+  template?: string
+  sessionId?: string
+}
+
+export interface ResolveHostnameOptions extends RenderSubdomainOptions {
   zone: string
-  subdomain?: string
   hostname?: string
+  /** Backwards-compatible alias for template. */
+  subdomain?: string
 }
 
 function gitBranch(cwd: string): string {
@@ -22,18 +28,15 @@ function gitBranch(cwd: string): string {
   }
 }
 
-export function resolveHostname(options: ResolveHostnameOptions): string {
-  if (options.hostname) {
-    return options.hostname
-  }
-
-  const template = options.subdomain ?? '{project}-{rand}'
+export function renderSubdomain(options: RenderSubdomainOptions): string {
+  const template = options.template ?? '{project}-{rand}'
   const project = slugify(basename(options.cwd))
   const branch = slugify(gitBranch(options.cwd))
 
   const label = template
     .replaceAll('{project}', project)
     .replaceAll('{branch}', branch)
+    .replaceAll('{session}', options.sessionId ?? 'session')
     .replaceAll('{ts}', Date.now().toString(36))
     .replace(/\{rand(?::(\d+))?\}/g, (_match, length: string | undefined) => randomId(Number(length ?? 4)))
 
@@ -44,5 +47,13 @@ export function resolveHostname(options: ResolveHostnameOptions): string {
     throw new Error(`Invalid subdomain label "${label}"`)
   }
 
-  return `${label}.${options.zone}`
+  return label
+}
+
+export function resolveHostname(options: ResolveHostnameOptions): string {
+  if (options.hostname) {
+    return options.hostname
+  }
+
+  return `${renderSubdomain({ ...options, template: options.template ?? options.subdomain })}.${options.zone}`
 }

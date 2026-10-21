@@ -67,6 +67,12 @@ export function formatDuration(milliseconds: number): string {
     return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`
   }
 
+  if (milliseconds >= 3_600_000) {
+    const hours = Math.floor(milliseconds / 3_600_000)
+    const minutes = Math.round((milliseconds % 3_600_000) / 60_000)
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
+  }
+
   const minutes = Math.floor(milliseconds / 60_000)
   const seconds = Math.round((milliseconds % 60_000) / 1000)
   return `${minutes}m ${seconds}s`
