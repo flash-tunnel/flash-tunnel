@@ -8,7 +8,7 @@ import type {
   SessionState
 } from '@flash-tunnel/core'
 import type { AdapterContext, FlashTunnelEvents } from '@flash-tunnel/types'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
@@ -85,6 +85,7 @@ interface StartOptions {
   silent?: boolean
   readyFile?: string
   onReady?: string
+  open?: boolean
   noOpen?: boolean
   spinner?: boolean
   yes?: boolean
@@ -155,6 +156,9 @@ function waitForStop(session: PreviewSession, quit?: Promise<void>): Promise<Sto
       process.off('SIGINT', onSigint)
       process.off('SIGTERM', onSigterm)
       process.off('SIGHUP', onSighup)
+      if (process.platform === 'win32') {
+        process.off('SIGBREAK', onSigbreak)
+      }
       process.off('uncaughtException', onUncaught)
       process.off('unhandledRejection', onUnhandledRejection)
       resolveStop({ reason, error })
@@ -172,6 +176,10 @@ function waitForStop(session: PreviewSession, quit?: Promise<void>): Promise<Sto
       finish('SIGHUP')
     }
 
+    function onSigbreak(): void {
+      finish('SIGTERM')
+    }
+
     function onUncaught(error: Error): void {
       finish('fatal', error)
     }
@@ -183,6 +191,9 @@ function waitForStop(session: PreviewSession, quit?: Promise<void>): Promise<Sto
     process.once('SIGINT', onSigint)
     process.once('SIGTERM', onSigterm)
     process.once('SIGHUP', onSighup)
+    if (process.platform === 'win32') {
+      process.once('SIGBREAK', onSigbreak)
+    }
     process.once('uncaughtException', onUncaught)
     process.once('unhandledRejection', onUnhandledRejection)
 
@@ -210,10 +221,53 @@ function installInterruptEscalation(): () => void {
 
   process.once('SIGINT', onSignal)
   process.once('SIGTERM', onSignal)
+  if (process.platform === 'win32') {
+    process.once('SIGBREAK', onSignal)
+  }
 
   return () => {
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
+    if (process.platform === 'win32') {
+      process.off('SIGBREAK', onSignal)
+    }
+  }
+}
+
+/**
+ * A detached watchdog waits for this process to exit, then reaps the session if
+ * the terminal was force-closed and no graceful cleanup ran.
+ */
+function installSessionWatchdog(sessionId: string): void {
+  const entry = process.argv[1]
+  if (!entry) {
+    return
+  }
+
+  try {
+    const child = spawn(
+      process.execPath,
+      [entry, '__reap', '--session', sessionId, '--force', '--wait-pid', String(process.pid)],
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env }
+      }
+    )
+    child.once('error', () => {})
+    child.unref()
+  }
+  catch {
+    // The session still has the normal exit reaper and the next-start sweep.
+  }
+}
+
+async function waitForPidExit(pid: number): Promise<void> {
+  while (isProcessAlive(pid)) {
+    await new Promise<void>((resolveWait) => {
+      setTimeout(resolveWait, 1000)
+    })
   }
 }
 
@@ -858,6 +912,10 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   pendingReapSessionId = session.sessionId
 
+  if (!keep) {
+    installSessionWatchdog(session.sessionId)
+  }
+
   reporter.human(`${theme.ok(symbols.ok)} local  ${theme.url(session.localUrl)}\n`)
   if (session.dns && session.hostname) {
     reporter.human(`${theme.ok(symbols.ok)} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
@@ -875,7 +933,8 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   })
 
   if (
-    !options.noOpen
+    options.open
+    && !options.noOpen
     && !reporter.json
     && process.stdout.isTTY
     && !process.env.CI
@@ -885,6 +944,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   }
 
   reporter.human(`${theme.dim('Press Ctrl+C to stop. c copies the URL, o opens it, q quits.')}\n`)
+  reporter.human(`${theme.dim(`session ${session.sessionId}  ·  if this terminal stops responding: pnpm ft clean --session ${session.sessionId}`)}\n`)
 
   if (keep) {
     reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
@@ -1155,8 +1215,12 @@ function runProvidersCommand(options: { json?: boolean, silent?: boolean } = {})
   runProviders(new Reporter(options))
 }
 
-async function runReapCommand(sessionId: string, force: boolean): Promise<void> {
+async function runReapCommand(sessionId: string, force: boolean, waitPid?: number): Promise<void> {
   try {
+    if (waitPid) {
+      await waitForPidExit(waitPid)
+    }
+
     const result = await reapSession(sessionId, { cleaner: createCleaner(), force })
     if (result.status === 'failed') {
       process.stderr.write(`${theme.err(symbols.fail)} reaper could not clean ${sessionId}: ${result.reasons.join('; ')}\n`)
@@ -1174,6 +1238,15 @@ function findReapSessionId(argv: string[]): string | undefined {
   return index >= 0 ? argv[index + 1] : undefined
 }
 
+function findNumericArgument(argv: string[], name: string): number | undefined {
+  const index = argv.indexOf(name)
+  if (index < 0) {
+    return undefined
+  }
+  const value = Number(argv[index + 1])
+  return Number.isInteger(value) && value > 0 ? value : undefined
+}
+
 export async function runCli(argv: string[] = process.argv): Promise<void> {
   installExitReaper()
 
@@ -1188,7 +1261,11 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
       process.exitCode = 2
       return
     }
-    await runReapCommand(sessionId, argv.includes('--force'))
+    await runReapCommand(
+      sessionId,
+      argv.includes('--force'),
+      findNumericArgument(argv, '--wait-pid')
+    )
     return
   }
 
@@ -1221,7 +1298,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--dry-run', 'Print the effective configuration and exit')
     .option('--ready-file <path>', 'Write the ready payload to a file')
     .option('--on-ready <command>', 'Run a command once the preview is ready')
-    .option('--no-open', 'Do not open the preview in a browser')
+    .option('--open', 'Open the preview in a browser')
+    .option('--no-open', 'Do not open the preview in a browser (default)')
     .option('--no-color', 'Disable colors')
     .option('--no-spinner', 'Disable the spinner')
     .option('-y, --yes', 'Disable prompts and use defaults')
@@ -1254,7 +1332,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--dry-run', 'Print the effective configuration and exit')
     .option('--ready-file <path>', 'Write the ready payload to a file')
     .option('--on-ready <command>', 'Run a command once the preview is ready')
-    .option('--no-open', 'Do not open the preview in a browser')
+    .option('--open', 'Open the preview in a browser')
+    .option('--no-open', 'Do not open the preview in a browser (default)')
     .option('--no-color', 'Disable colors')
     .option('--no-spinner', 'Disable the spinner')
     .option('-y, --yes', 'Disable prompts and use defaults')

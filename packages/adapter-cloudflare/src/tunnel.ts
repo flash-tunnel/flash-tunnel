@@ -19,6 +19,13 @@ import { CloudflareApi } from './api'
 const ADAPTER_ID = 'cloudflare'
 const QUICK_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
 
+function shellCommand(path: string): string {
+  if (process.platform === 'win32' && /\s/.test(path) && !path.startsWith('"')) {
+    return `"${path}"`
+  }
+  return path
+}
+
 export interface CloudflareTunnelOptions {
   cloudflaredPath?: string
   accountId?: string
@@ -75,7 +82,7 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
   }
 
   function ensureCloudflared(): string {
-    const check = spawnSync(cloudflaredPath, ['--version'], {
+    const check = spawnSync(shellCommand(cloudflaredPath), ['--version'], {
       encoding: 'utf8',
       shell: process.platform === 'win32',
       timeout: 10_000,
@@ -249,7 +256,7 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
         ? ['--no-autoupdate', 'tunnel', 'run']
         : ['--no-autoupdate', 'tunnel', '--url', localUrl]
 
-      const child = spawn(cloudflaredPath, args, {
+      const child = spawn(shellCommand(cloudflaredPath), args, {
         shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,

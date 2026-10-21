@@ -72,7 +72,7 @@ export default defineConfig({
 --json                stdout 输出 NDJSON
 --ready-file <path>   把就绪信息写入文件
 --on-ready <cmd>      就绪后执行命令，注入 FLASH_TUNNEL_URL 等环境变量
---no-open / --no-spinner / --no-color / --silent / --yes
+--open / --no-spinner / --no-color / --silent / --yes
 ```
 
 ## 清理与恢复
@@ -93,7 +93,7 @@ export default defineConfig({
 | `FLASH_TUNNEL_MODE` / `FLASH_TUNNEL_PORT` / `FLASH_TUNNEL_COMMAND` | 覆盖配置 |
 | `FLASH_TUNNEL_CLOUDFLARED` | cloudflared 路径 |
 | `FLASH_TUNNEL_AUTO_STOP` | 自动停止时长 |
-| `FLASH_TUNNEL_NO_OPEN` | 不自动打开浏览器 |
+| `FLASH_TUNNEL_NO_OPEN` | 即使传了 `--open` 也不打开浏览器 |
 | `NO_COLOR` / `FORCE_COLOR` / `CI` | 颜色与交互降级 |
 
 ## 设计文档
