@@ -152,7 +152,7 @@
 - [x] 适配器一致性套件（若交付 `@flash-tunnel/testing`）
 - [x] UI 单测：`NO_COLOR`/`FORCE_COLOR` 下的输出、非 TTY 无动画、`--json` 纯净 stdout
 - [x] prompts 取消（`ExitPromptError`）路径测试
-- [ ] 集成测试（fake 适配器 + 真实子进程信号）
+- [x] 集成测试（fake 适配器 + 真实子进程信号）
 - [x] Windows 进程树停止测试
 - [ ] E2E（gated）创建 → 验证 → 清理 → 断言无残留
 - [x] kill -9 恢复测试

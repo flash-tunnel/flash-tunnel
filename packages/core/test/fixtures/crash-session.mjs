@@ -104,8 +104,23 @@ async function main() {
 
   process.stdout.write(`READY ${session.sessionId} ${session.server.pid} ${tunnelProcess.pid}\n`)
 
-  // Simulate a hard crash: ignore termination signals and wait to be killed.
-  process.on('SIGTERM', () => {})
+  if (process.env.GRACEFUL === '1') {
+    const shutdown = async (signal) => {
+      await session.stop().catch(() => {})
+      process.exit(signal === 'SIGINT' ? 130 : 143)
+    }
+    process.on('SIGINT', () => {
+      void shutdown('SIGINT')
+    })
+    process.on('SIGTERM', () => {
+      void shutdown('SIGTERM')
+    })
+  }
+  else {
+    // Simulate a hard crash: ignore termination signals and wait to be killed.
+    process.on('SIGTERM', () => {})
+  }
+
   setInterval(() => {}, 1000)
 }
 

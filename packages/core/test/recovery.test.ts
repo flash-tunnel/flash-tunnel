@@ -81,6 +81,35 @@ afterEach(async () => {
   await rm(project, { recursive: true, force: true })
 })
 
+describe.skipIf(!built)('signal recovery', () => {
+  it.skipIf(process.platform === 'win32')('cleans up on a real SIGINT', async () => {
+    child = spawn(process.execPath, [fileURLToPath(fixture), project], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, FLASH_TUNNEL_HOME: home, GRACEFUL: '1' }
+    })
+
+    await waitForReady(child)
+    const pids = JSON.parse(await readFile(join(project, 'pids.json'), 'utf8')) as {
+      sessionId: string
+      serverProcessPid: number
+      tunnelPid: number
+    }
+
+    const exitCode = new Promise<number | null>((resolveExit) => {
+      child?.once('exit', code => resolveExit(code))
+    })
+
+    child.kill('SIGINT')
+    expect(await exitCode).toBe(130)
+
+    expect(await readGlobalSessionState(pids.sessionId)).toBeUndefined()
+    expect(await listSessionStates()).toHaveLength(0)
+    expect(isProcessAlive(pids.tunnelPid)).toBe(false)
+    expect(isProcessAlive(pids.serverProcessPid)).toBe(false)
+  })
+})
+
 describe.skipIf(!built)('kill -9 recovery', () => {
   it('reaps a session whose process was killed', async () => {
     child = spawn(process.execPath, [fileURLToPath(fixture), project], {
