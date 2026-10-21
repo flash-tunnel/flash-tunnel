@@ -1,106 +1,278 @@
 # flash-tunnel
 
-在本地项目里执行 `npx flash-tunnel`，自动识别项目、拉起本地服务，并通过可插拔的 DNS / 隧道适配器把服务暴露到一个临时公网地址；退出时自动清理 DNS 记录与隧道。
+**Turn any local dev server into a shareable preview with one command.**  
+Detect and start your local server, expose it through Cloudflare Tunnel, and clean up the DNS record, tunnel, and child processes on exit.
 
-> 当前版本：`0.0.0`（开发中）。正式版本 `0.1.0` 将在 CI 与 npm Trusted Publisher 配置完成后发布。
+**English** | [简体中文](https://github.com/flash-tunnel/flash-tunnel/blob/main/README_CN.md)
 
-## 快速开始
+[![npm version](https://img.shields.io/npm/v/flash-tunnel?style=flat-square&color=blue)](https://www.npmjs.com/package/flash-tunnel)
+[![npm downloads](https://img.shields.io/npm/dm/flash-tunnel?style=flat-square)](https://www.npmjs.com/package/flash-tunnel)
+[![license](https://img.shields.io/npm/l/flash-tunnel?style=flat-square)](https://github.com/flash-tunnel/flash-tunnel/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/flash-tunnel?style=flat-square)](https://www.npmjs.com/package/flash-tunnel)
+
+> Early preview (`0.0.x`). APIs and behavior may still change.
+
+## Why flash-tunnel
+
+- **Zero-config quick start** — `--mode quick` needs no Cloudflare token and returns a `*.trycloudflare.com` URL.
+- **Custom domains** — create a Cloudflare Tunnel, write DNS, launch `cloudflared`, and verify the public URL in one command.
+- **Cleans up after itself** — graceful exits, `Ctrl+C`, and `SIGTERM` clean resources in order; stale sessions are handled by a watchdog and a startup sweep.
+- **Knows your project** — detects Vite, Next, Nuxt, Astro, SvelteKit, static sites, and more.
+- **CI-friendly** — combine `--json`, `--ready-file`, `--on-ready`, and `--auto-stop` for unattended previews.
+
+## How it works
+
+1. Detects the framework, package manager, scripts, and port from your project.
+2. Starts the local dev server (or attaches to an existing one).
+3. Creates a Cloudflare Tunnel, writes the DNS record, and launches `cloudflared`.
+4. Waits until the public URL answers and prints it.
+5. Cleans up the tunnel, DNS record, and child processes when you exit.
+
+## Requirements
+
+- Node.js **>= 22.14**
+- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+- A Cloudflare account (named mode only)
 
 ```bash
-# 临时 trycloudflare.com 域名，无需 Token
-npx flash-tunnel --mode quick
+cloudflared --version
+```
 
-# 自有域名（需要 CLOUDFLARE_API_TOKEN）
-export CLOUDFLARE_API_TOKEN=...
+## Quick start
+
+### Temporary URL (no token)
+
+```bash
+npx flash-tunnel --mode quick
+```
+
+### Custom domain (token required)
+
+```bash
+# macOS / Linux
+export CLOUDFLARE_API_TOKEN=your_token_here
+
+# Windows PowerShell
+$env:CLOUDFLARE_API_TOKEN = "your_token_here"
+
 npx flash-tunnel --zone example.com
 ```
 
-第一次使用可以生成配置并检查环境：
+Run the environment check and generate a config on first use:
 
 ```bash
-npx flash-tunnel init
 npx flash-tunnel doctor
+npx flash-tunnel init
 ```
 
-## 命令
+## Install
 
-| 命令 | 说明 |
+```bash
+# Run without installing
+npx flash-tunnel
+
+# Install globally
+npm install -g flash-tunnel
+
+# Add to a project (recommended for a pinned version)
+pnpm add -D flash-tunnel
+```
+
+Then:
+
+```bash
+flash-tunnel --version
+flash-tunnel doctor
+```
+
+## Commands
+
+| Command | Description |
 | --- | --- |
-| `flash-tunnel` / `flash-tunnel start` | 默认命令：探测项目、启动本地服务、创建隧道并等待退出 |
-| `flash-tunnel clean` | 清理遗留会话（`--session` / `--project` / `--stale` / `--all --yes` / `--dry-run`） |
-| `flash-tunnel doctor` | 检查 Node、配置、Token、Zone、cloudflared、端口与遗留会话 |
-| `flash-tunnel init` | 生成 `flash-tunnel.ts` 并把 `.flash-tunnel/` 加入 `.gitignore` |
-| `flash-tunnel providers` | 列出内置适配器与能力 |
-| `flash-tunnel __reap --session <id>` | 内部命令：独立进程兜底清理 |
+| `flash-tunnel` / `flash-tunnel start` | Detect the project, start the local server, create the tunnel, and wait |
+| `flash-tunnel clean` | Clean leftover sessions (`--session` / `--project` / `--stale` / `--all --yes` / `--dry-run`) |
+| `flash-tunnel doctor` | Check Node, config, token, zone, cloudflared, ports, and leftover sessions |
+| `flash-tunnel init` | Create `flash-tunnel.ts` and add `.flash-tunnel/` to `.gitignore` |
+| `flash-tunnel providers` | List built-in adapters and their capabilities |
 
-## 配置
+## Configuration
+
+The config file is optional. Put it in the project root, or any parent directory up to the git root:
 
 ```ts
 // flash-tunnel.ts
 import { defineConfig } from 'flash-tunnel'
 
 export default defineConfig({
-  domain: { zone: 'example.com', subdomain: '{project}-{rand}' },
-  server: { command: 'pnpm dev', port: 5173, timeout: 90_000 },
-  tunnel: { mode: 'named' },
+  domain: {
+    zone: 'example.com',
+    subdomain: '{project}-{rand}'
+  },
+  server: {
+    command: 'pnpm dev',
+    port: 5173,
+    timeout: 90_000
+  },
+  tunnel: {
+    mode: 'named'
+  },
   autoStopAfter: '2h'
 })
 ```
 
-配置文件可选；相对路径以配置文件所在目录为基准。优先级：CLI > 环境变量 > `flash-tunnel.ts` > 自动探测。
+- Relative paths are resolved from the **config file's directory**.
+- Precedence: **CLI > environment variables > `flash-tunnel.ts` > auto-detection**.
+- `subdomain` supports `{project}`, `{branch}`, `{rand}`, `{rand:6}`, `{session}`, and `{ts}`.
+- See the [configuration design](https://github.com/flash-tunnel/flash-tunnel/blob/main/ai-docs/design-docs/06-configuration.md) for every field and default.
 
-### 常用参数
+### Common options
 
-```text
---cwd <dir>           项目目录
---config <path>       指定 flash-tunnel.ts
---port <n>            期望端口
---command <cmd>       显式启动命令
---url <url>           复用已有服务
---attach              只复用（需要 --url）
---static [dir]        静态托管
---dev                 强制 dev 脚本
---build               启动前执行 build
---reuse               端口被占用时复用
---mode named|quick    隧道模式
---zone / --hostname / --subdomain
---overwrite           覆盖非本工具创建的 DNS 记录
---allow-multilevel    允许多级子域
---auto-stop <dur>     到期自动停止并清理，如 30m / 2h
---keep                退出时保留 DNS 与隧道
---dry-run             只输出生效配置与来源
---json                stdout 输出 NDJSON
---ready-file <path>   把就绪信息写入文件
---on-ready <cmd>      就绪后执行命令，注入 FLASH_TUNNEL_URL 等环境变量
---open / --no-spinner / --no-color / --silent / --yes
+**Local server**
+
+| Option | Description |
+| --- | --- |
+| `--cwd <dir>` | Project directory |
+| `--config <path>` | Explicit `flash-tunnel.ts` |
+| `--port <n>` | Preferred port |
+| `--command <cmd>` | Explicit start command |
+| `--url <url>` | Reuse an already running server |
+| `--attach` | Attach only; requires `--url` |
+| `--static [dir]` | Serve a static directory |
+| `--dev` | Force the dev script |
+| `--build` | Run the build script first |
+| `--reuse` | Reuse a server already listening on the port |
+
+**Tunnel and domain**
+
+| Option | Description |
+| --- | --- |
+| `--mode named\|quick` | Tunnel mode |
+| `--zone <domain>` | Cloudflare zone |
+| `--hostname <fqdn>` | Full public hostname |
+| `--subdomain <label>` | Subdomain template or literal label |
+| `--allow-multilevel` | Allow multi-level subdomains (Advanced Certificate required) |
+| `--overwrite` | Replace DNS records not created by this tool (dangerous) |
+| `--auto-stop <dur>` | Stop and clean up after a duration, e.g. `30m` or `2h` |
+| `--keep` | Keep the DNS record and tunnel on exit |
+
+**Output and automation**
+
+| Option | Description |
+| --- | --- |
+| `--dry-run` | Print the effective config and sources without creating resources |
+| `--json` | Emit NDJSON on stdout; human logs go to stderr |
+| `--silent` | Print errors only |
+| `--ready-file <path>` | Write the ready payload to a file |
+| `--on-ready <cmd>` | Run a command once ready, with environment variables injected |
+| `--open` | Open the preview in a browser |
+| `--verbose` | Stream dev server and cloudflared logs |
+| `--no-color` / `--no-spinner` / `-y, --yes` | Disable color / spinner / prompts |
+
+## Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token (the only credential source) |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID; optional when the token sees one account |
+| `CLOUDFLARE_ZONE_ID` | Zone ID; usually optional, the zone is resolved from its name |
+| `FLASH_TUNNEL_ZONE` | Zone name, same as `domain.zone` |
+| `FLASH_TUNNEL_HOSTNAME` | Full hostname; takes precedence over zone/subdomain |
+| `FLASH_TUNNEL_MODE` | `named` or `quick` |
+| `FLASH_TUNNEL_PORT` | Preferred port |
+| `FLASH_TUNNEL_COMMAND` | Start command |
+| `FLASH_TUNNEL_CLOUDFLARED` | Path to the `cloudflared` executable |
+| `FLASH_TUNNEL_AUTO_STOP` | Auto-stop duration |
+| `FLASH_TUNNEL_NO_OPEN` | Never open a browser, even with `--open` |
+| `NO_COLOR` / `FORCE_COLOR` / `CI` | Color, spinner, and interaction fallbacks |
+
+### Cloudflare token permissions
+
+Create a **Custom token** at <https://dash.cloudflare.com/profile/api-tokens> with:
+
+| Permission | Purpose |
+| --- | --- |
+| Account · Cloudflare Tunnel · Edit | Create/delete tunnels, write ingress, clean connections |
+| Zone · DNS · Edit | Create/delete CNAME records and detect conflicts |
+| Zone · Zone · Read | List zones and infer the domain |
+| Account · Account Settings · Read | List accounts and infer the account ID |
+
+> The Cloudflare dashboard may label `Edit` as `Write` now; they mean the same thing.
+
+## Cleanup and recovery
+
+On a normal exit, flash-tunnel:
+
+1. Stops `cloudflared`
+2. Waits for connections to drain
+3. Deletes the DNS record
+4. Deletes the tunnel
+5. Stops the local server
+6. Removes the session state and project lock
+
+Other paths:
+
+- `Ctrl+C` / `SIGTERM` / `SIGHUP`: clean up normally; exit code `130` / `143`.
+- Second `Ctrl+C`: exits immediately, keeps the state file, and lets the watchdog or next run reap it.
+- Force-kill / closed terminal: a detached watchdog tries to clean up after the main process exits; the next start also scans `~/.flash-tunnel/sessions/`.
+- `--keep`: keeps the DNS record and tunnel and prints a manual cleanup command.
+- Cleanup failure: exit code `8`; the state file is kept so `flash-tunnel clean` can retry.
+
+```bash
+# List leftover sessions
+flash-tunnel clean
+
+# Clean stale sessions for this project
+flash-tunnel clean --stale
+
+# Clean one session
+flash-tunnel clean --session ft_xxxx
+
+# Clean everything (confirmation required)
+flash-tunnel clean --all --yes
 ```
 
-## 清理与恢复
+## CI usage
 
-- 正常退出、`Ctrl+C`、`SIGTERM`、未捕获异常都会尝试停止进程并按顺序删除 DNS 与隧道。
-- 强杀或断电后，下次启动会扫描 `~/.flash-tunnel/sessions/`，同项目的过期会话自动回收，其它项目只提示。
-- `--keep` 会保留 DNS 与隧道并打印手动清理命令。
-- 清理失败保留状态文件并以退出码 `8` 结束，可重复执行 `flash-tunnel clean`。
-- 状态文件权限为 `0600`、目录为 `0700`；Token 只从环境变量读取，不落盘。
+```bash
+npx flash-tunnel \
+  --json \
+  --ready-file .flash-tunnel/ready.json \
+  --auto-stop 2h
+```
 
-## 环境变量
+- stdout contains only NDJSON; the `ready` event includes the public URL.
+- `--ready-file` is convenient for polling from scripts.
+- `--on-ready` receives `FLASH_TUNNEL_URL`, `FLASH_TUNNEL_LOCAL_URL`, `FLASH_TUNNEL_SESSION_ID`, and related variables.
 
-| 变量 | 作用 |
+```bash
+# Read the URL from the ready file
+node -p "require('./.flash-tunnel/ready.json').url"
+```
+
+## Security
+
+- The token is read from the environment only. It is never written to config, state, or argv.
+- Grant only the four permissions above and set an expiry date.
+- Random subdomains are used by default to avoid collisions and stale DNS caches.
+- DNS records and tunnels are deleted by recorded ID and checked against the session marker.
+- State directories use `0700`; state files use `0600`.
+- `--overwrite` replaces records created by other tools. Use it only when you are sure.
+
+## Troubleshooting
+
+| Symptom | Fix |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token（唯一凭据来源） |
-| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_ZONE_ID` | 账号与 Zone id |
-| `FLASH_TUNNEL_ZONE` / `FLASH_TUNNEL_HOSTNAME` | 主域名 / 完整主机名 |
-| `FLASH_TUNNEL_MODE` / `FLASH_TUNNEL_PORT` / `FLASH_TUNNEL_COMMAND` | 覆盖配置 |
-| `FLASH_TUNNEL_CLOUDFLARED` | cloudflared 路径 |
-| `FLASH_TUNNEL_AUTO_STOP` | 自动停止时长 |
-| `FLASH_TUNNEL_NO_OPEN` | 即使传了 `--open` 也不打开浏览器 |
-| `NO_COLOR` / `FORCE_COLOR` / `CI` | 颜色与交互降级 |
+| `Cannot run cloudflared` | Install cloudflared or set `FLASH_TUNNEL_CLOUDFLARED` |
+| `AUTH_INVALID` / `403` | The token is missing Tunnel/DNS/Zone permissions |
+| `ACCOUNT_NOT_FOUND` | Set `CLOUDFLARE_ACCOUNT_ID` |
+| `ZONE_NOT_FOUND` / `ZONE_NOT_ACTIVE` | Check `--zone` and make sure the domain is active in Cloudflare |
+| `RECORD_CONFLICT` | Use another `--subdomain`, or `--overwrite` after verifying the old record |
+| `No runnable script found` | Set `server.command`, use `--static dist`, or point `--cwd` at the app |
+| Port already in use | Use `--port <n>` or `--reuse` |
+| Terminal shortcuts do not respond | Click the terminal window and retry; the session ID is printed on startup |
+| Cleanup exits with code `8` | Run `flash-tunnel clean --stale` again |
 
-## 设计文档
-
-完整设计见 [ai-docs/design-docs/README.md](./ai-docs/design-docs/README.md)。
-
-## 开发
+## Development
 
 ```bash
 pnpm install
@@ -112,8 +284,18 @@ pnpm typecheck
 pnpm test
 ```
 
-要求 Node `>=22.14`、pnpm `12.12.1`。
+Requires Node `>= 22.14` and pnpm `12.12.1`.
+
+The end-to-end suite is opt-in and needs a real Cloudflare account:
+
+```bash
+FLASH_TUNNEL_E2E=1 pnpm test:e2e
+```
+
+## Design docs
+
+The full design is in [ai-docs/design-docs](https://github.com/flash-tunnel/flash-tunnel/tree/main/ai-docs/design-docs) (Chinese).
 
 ## License
 
-MIT
+[MIT](https://github.com/flash-tunnel/flash-tunnel/blob/main/LICENSE)
