@@ -243,6 +243,9 @@ describe('startPreviewSession', () => {
       'tunnel:start'
     ])
 
+    const state = await readSessionState(cwd)
+    expect(state?.dns?.comment).toBe(`flash-tunnel:${session.sessionId}`)
+
     await session.stop()
 
     expect(sequence.indexOf('dns:remove')).toBeGreaterThan(sequence.indexOf('tunnel:stop'))

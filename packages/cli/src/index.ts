@@ -101,7 +101,12 @@ interface DoctorCommandOptions {
 }
 
 type SignalReason = 'SIGINT' | 'SIGHUP' | 'SIGTERM'
-type StopReason = SignalReason | 'auto-stop' | 'server-exit' | 'tunnel-exit'
+type StopReason = SignalReason | 'auto-stop' | 'fatal' | 'server-exit' | 'tunnel-exit'
+
+interface StopOutcome {
+  reason: StopReason
+  error?: unknown
+}
 
 let pendingReapSessionId: string | undefined
 let exitReaperInstalled = false
@@ -122,11 +127,11 @@ function readVersion(): string {
   }
 }
 
-function waitForStop(session: PreviewSession): Promise<StopReason> {
+function waitForStop(session: PreviewSession): Promise<StopOutcome> {
   return new Promise((resolveStop) => {
     let finished = false
 
-    function finish(reason: StopReason): void {
+    function finish(reason: StopReason, error?: unknown): void {
       if (finished) {
         return
       }
@@ -134,7 +139,9 @@ function waitForStop(session: PreviewSession): Promise<StopReason> {
       process.off('SIGINT', onSigint)
       process.off('SIGTERM', onSigterm)
       process.off('SIGHUP', onSighup)
-      resolveStop(reason)
+      process.off('uncaughtException', onUncaught)
+      process.off('unhandledRejection', onUnhandledRejection)
+      resolveStop({ reason, error })
     }
 
     function onSigint(): void {
@@ -149,9 +156,19 @@ function waitForStop(session: PreviewSession): Promise<StopReason> {
       finish('SIGHUP')
     }
 
+    function onUncaught(error: Error): void {
+      finish('fatal', error)
+    }
+
+    function onUnhandledRejection(reason: unknown): void {
+      finish('fatal', reason instanceof Error ? reason : new Error(String(reason)))
+    }
+
     process.once('SIGINT', onSigint)
     process.once('SIGTERM', onSigterm)
     process.once('SIGHUP', onSighup)
+    process.once('uncaughtException', onUncaught)
+    process.once('unhandledRejection', onUnhandledRejection)
 
     session.exited.then(() => {
       if (!session.stopping) {
@@ -221,6 +238,18 @@ function createCleaner(): SessionCleaner | undefined {
         return
       }
       try {
+        const records = await api.listDnsRecords(state.dns.zoneId, { name: state.dns.hostname })
+        const record = records.find(item => item.id === state.dns?.recordId)
+
+        if (!record) {
+          return
+        }
+        if (!record.comment?.startsWith('flash-tunnel:')) {
+          throw new Error(
+            `Refusing to delete DNS record ${record.id}: it was not created by flash-tunnel`
+          )
+        }
+
         await api.deleteDnsRecord(state.dns.zoneId, state.dns.recordId)
       }
       catch (error) {
@@ -236,6 +265,21 @@ function createCleaner(): SessionCleaner | undefined {
       }
       if (!state.tunnel.accountId) {
         throw new Error('Session is missing the Cloudflare account id')
+      }
+
+      try {
+        const tunnel = await api.getTunnel(state.tunnel.accountId, state.tunnel.tunnelId)
+        if (tunnel.name !== state.tunnel.name) {
+          throw new Error(
+            `Refusing to delete tunnel ${state.tunnel.tunnelId}: name does not match the session record`
+          )
+        }
+      }
+      catch (error) {
+        if (error instanceof AdapterError && error.code === 'NOT_FOUND') {
+          return
+        }
+        throw error
       }
 
       await api.cleanupConnections(state.tunnel.accountId, state.tunnel.tunnelId).catch(() => {})
@@ -703,9 +747,13 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
   }
 
-  const reason = await waitForStop(session)
+  const { reason, error: fatalError } = await waitForStop(session)
 
-  if (reason === 'tunnel-exit') {
+  if (reason === 'fatal') {
+    reportError(fatalError ?? new Error('Unexpected failure'), reporter)
+    process.exitCode = 1
+  }
+  else if (reason === 'tunnel-exit') {
     reporter.error(new Error('cloudflared exited unexpectedly'), 'TUNNEL_EXITED')
     process.exitCode = 5
   }

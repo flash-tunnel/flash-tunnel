@@ -519,7 +519,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
           provider: dnsRef.provider,
           zoneId: dnsRef.zoneId,
           recordId: dnsRef.recordId,
-          hostname: dnsRef.name
+          hostname: dnsRef.name,
+          comment: `flash-tunnel:${sessionId}`
         }
         await transition('dns-created')
       }

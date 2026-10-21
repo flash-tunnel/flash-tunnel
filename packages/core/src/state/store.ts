@@ -44,6 +44,7 @@ export interface SessionDnsState {
   zoneId: string
   recordId: string
   hostname: string
+  comment?: string
 }
 
 export interface SessionState {
