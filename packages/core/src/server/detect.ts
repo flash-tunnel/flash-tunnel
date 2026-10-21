@@ -133,7 +133,18 @@ function createCommand(manager: PackageManager, script: string): string {
   return `${manager} run ${script}`
 }
 
-export function detectServer(cwd: string, overrides: ServerConfig = {}): ServerPlan {
+export interface DetectServerOptions {
+  /** Skip the preview script even when build output exists. */
+  forceDev?: boolean
+  /** Ignore package scripts and serve a static directory. */
+  forceStatic?: boolean
+}
+
+export function detectServer(
+  cwd: string,
+  overrides: ServerConfig = {},
+  options: DetectServerOptions = {}
+): ServerPlan {
   const baseDirectory = resolve(cwd)
   const workingDirectory = overrides.cwd ? resolve(baseDirectory, overrides.cwd) : baseDirectory
 
@@ -173,6 +184,24 @@ export function detectServer(cwd: string, overrides: ServerConfig = {}): ServerP
     }
   }
 
+  if (options.forceStatic) {
+    const staticDirectory = findStaticDirectory(workingDirectory)
+    if (!staticDirectory) {
+      throw new Error(
+        'No static directory found. Build the project or pass --static <dir> with an index.html.'
+      )
+    }
+    return {
+      mode: 'static',
+      cwd: workingDirectory,
+      dir: join(workingDirectory, staticDirectory),
+      framework: 'unknown',
+      port: overrides.port ?? 4173,
+      reason: `static mode forced (${staticDirectory}/)`,
+      confidence: 'high'
+    }
+  }
+
   const pkg = readPackageJson(workingDirectory)
   const packageManager = detectPackageManager(workingDirectory, pkg)
   const frameworkDefinition = detectFramework(pkg)
@@ -180,7 +209,7 @@ export function detectServer(cwd: string, overrides: ServerConfig = {}): ServerP
   const scripts = pkg?.scripts ?? {}
   const hasOutput = hasBuildOutput(workingDirectory, framework)
 
-  if (scripts.preview && hasOutput) {
+  if (!options.forceDev && scripts.preview && hasOutput) {
     return {
       mode: 'command',
       cwd: workingDirectory,
@@ -199,7 +228,7 @@ export function detectServer(cwd: string, overrides: ServerConfig = {}): ServerP
     }
   }
 
-  if (scripts.preview && !scripts.dev && !hasOutput) {
+  if (!options.forceDev && scripts.preview && !scripts.dev && !hasOutput) {
     throw new Error(
       'Found a preview script but no build output. Run the build first, or use --dev if a dev script exists.'
     )

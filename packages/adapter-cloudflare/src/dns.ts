@@ -84,7 +84,7 @@ export function createCloudflareDns(options: CloudflareDnsOptions): DnsAdapter {
       const existing = await api.listDnsRecords(zoneId, { name: spec.name })
 
       for (const record of existing) {
-        if (isOwned(record.comment)) {
+        if (spec.overwrite || isOwned(record.comment)) {
           await api.deleteDnsRecord(zoneId, record.id).catch(() => {})
         }
       }

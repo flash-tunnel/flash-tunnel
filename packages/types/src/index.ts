@@ -59,6 +59,8 @@ export interface DnsRecordSpec {
   proxied?: boolean
   ttl?: number
   comment?: string
+  /** Replace records that were not created by this tool. */
+  overwrite?: boolean
 }
 
 export interface DnsRecordRef {

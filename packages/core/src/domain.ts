@@ -6,6 +6,7 @@ export interface RenderSubdomainOptions {
   cwd: string
   template?: string
   sessionId?: string
+  allowMultilevel?: boolean
 }
 
 export interface ResolveHostnameOptions extends RenderSubdomainOptions {
@@ -40,11 +41,15 @@ export function renderSubdomain(options: RenderSubdomainOptions): string {
     .replaceAll('{ts}', Date.now().toString(36))
     .replace(/\{rand(?::(\d+))?\}/g, (_match, length: string | undefined) => randomId(Number(length ?? 4)))
 
-  if (label.includes('.')) {
-    throw new Error('Multi-level subdomains are not supported yet; use a single label')
+  if (label.includes('.') && !options.allowMultilevel) {
+    throw new Error('Multi-level subdomains require --allow-multilevel and an Advanced Certificate')
   }
-  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label) || label.length > 63) {
-    throw new Error(`Invalid subdomain label "${label}"`)
+
+  const labels = label.split('.')
+  for (const part of labels) {
+    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part) || part.length > 63) {
+      throw new Error(`Invalid subdomain label "${label}"`)
+    }
   }
 
   return label

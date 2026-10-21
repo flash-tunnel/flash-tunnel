@@ -104,6 +104,29 @@ describe('resolveConfig', () => {
     expect(resolved.values.server.cwd).toBe(configDir)
   })
 
+  it('supports static and attach cli modes', () => {
+    const staticResolved = resolve({}, { cli: { static: 'dist' } })
+    expect(staticResolved.values.server.dir).toBe(join(cwd, 'dist'))
+    expect(staticResolved.sources['server.dir']?.source).toBe('cli')
+
+    expect(() => resolve({}, { cli: { static: 'dist', url: 'http://127.0.0.1:3000' } }))
+      .toThrow(/cannot be used together/)
+    expect(() => resolve({}, { cli: { attach: true } })).toThrow(/--attach requires --url/)
+    expect(() => resolve({ server: { command: 'pnpm dev' } }, { cli: { attach: true, url: 'http://127.0.0.1:3000' } }))
+      .toThrow(/--attach cannot be used with server.command/)
+  })
+
+  it('guards multi-level subdomains behind the cli flag', () => {
+    expect(() => resolve({ domain: { zone: 'example.com', subdomain: 'a.b' } }))
+      .toThrow(/Multi-level subdomains/)
+
+    const resolved = resolve(
+      { domain: { zone: 'example.com', subdomain: 'a.b' } },
+      { cli: { allowMultilevel: true } }
+    )
+    expect(resolved.values.domain.hostname).toBe('a.b.example.com')
+  })
+
   it('records detected server values', () => {
     const resolved = resolve({}, {
       detected: { command: 'pnpm dev', port: 5173, framework: 'vite', reason: 'scripts.dev' }

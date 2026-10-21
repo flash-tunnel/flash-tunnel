@@ -55,6 +55,7 @@ export interface StartPreviewSessionOptions {
   verifyTimeoutMs?: number
   persist?: boolean
   keep?: boolean
+  overwrite?: boolean
   autoStopAfterMs?: number
   configSource?: string
   /** Test hook: shrink the total cleanup budget. */
@@ -498,7 +499,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       await adapters.dns.preflight(ctx, {
         zone: options.zone,
         name: options.hostname,
-        type: handle.dns.type
+        type: handle.dns.type,
+        overwrite: options.overwrite
       })
       dnsRef = await adapters.dns.ensure(ctx, {
         zone: options.zone,
@@ -507,7 +509,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         content: handle.dns.target,
         proxied: handle.dns.proxied,
         ttl: 1,
-        comment: `flash-tunnel:${sessionId}`
+        comment: `flash-tunnel:${sessionId}`,
+        overwrite: options.overwrite
       })
       emitStep('dns', 'ok', dnsRef.name)
 

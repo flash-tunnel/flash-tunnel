@@ -120,6 +120,44 @@ describe('cloudflareDns', () => {
     })).rejects.toMatchObject({ code: 'RECORD_CONFLICT' })
   })
 
+  it('overwrites a foreign record only when requested', async () => {
+    const calls: FetchCall[] = []
+    const adapter = createCloudflareDns({
+      apiToken: 'token',
+      fetcher: createApiFetcher({
+        calls,
+        records: [{
+          id: 'other',
+          name: 'demo.example.com',
+          type: 'CNAME',
+          content: 'other.example.com',
+          proxied: false
+        }]
+      })
+    })
+    const ctx = createContext('D:/Projects/app')
+
+    await expect(adapter.preflight(ctx, {
+      zone: 'example.com',
+      name: 'demo.example.com',
+      type: 'CNAME',
+      overwrite: true
+    })).resolves.toBeUndefined()
+
+    await adapter.ensure(ctx, {
+      zone: 'example.com',
+      name: 'demo.example.com',
+      type: 'CNAME',
+      content: 'new.cfargotunnel.com',
+      proxied: true,
+      comment: 'flash-tunnel:ft_new',
+      overwrite: true
+    })
+
+    const deleteCall = calls.find(call => call.method === 'DELETE')
+    expect(deleteCall?.url.pathname).toContain('/dns_records/other')
+  })
+
   it('reclaims records carrying the flash-tunnel marker', async () => {
     const calls: FetchCall[] = []
     const adapter = createCloudflareDns({

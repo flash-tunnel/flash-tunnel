@@ -1,5 +1,12 @@
 import type { FlashTunnelConfig } from '@flash-tunnel/config'
-import type { CleanSessionResult, PreviewSession, ResolvedConfig, SessionCleaner, SessionState } from '@flash-tunnel/core'
+import type {
+  CleanSessionResult,
+  PreviewSession,
+  ResolveConfigInput,
+  ResolvedConfig,
+  SessionCleaner,
+  SessionState
+} from '@flash-tunnel/core'
 import type { FlashTunnelEvents } from '@flash-tunnel/types'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -43,6 +50,11 @@ interface StartOptions {
   zone?: string
   hostname?: string
   subdomain?: string
+  static?: string | boolean
+  attach?: boolean
+  dev?: boolean
+  overwrite?: boolean
+  allowMultilevel?: boolean
   dryRun?: boolean
   verbose?: boolean
   keep?: boolean
@@ -378,7 +390,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   const apiToken = process.env.CLOUDFLARE_API_TOKEN
   const apiBase = process.env.FLASH_TUNNEL_CLOUDFLARE_API_BASE
-  const cliConfig = {
+  const cliConfig: NonNullable<ResolveConfigInput['cli']> = {
     zone: options.zone,
     hostname: options.hostname,
     subdomain: options.subdomain,
@@ -386,6 +398,11 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     command: options.command,
     port: options.port,
     url: options.url,
+    static: options.static === true ? true : typeof options.static === 'string' ? options.static : undefined,
+    attach: options.attach,
+    dev: options.dev,
+    overwrite: options.overwrite,
+    allowMultilevel: options.allowMultilevel,
     autoStop: options.autoStop
   }
 
@@ -420,7 +437,14 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     }
   }
 
-  let detected: { command?: string, port?: number, framework?: string, reason?: string } | undefined
+  let detected: {
+    command?: string
+    port?: number
+    dir?: string
+    mode?: string
+    framework?: string
+    reason?: string
+  } | undefined
   let detectionError: unknown
   try {
     const plan = detectServer(cwd, {
@@ -430,10 +454,15 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       url: preliminary.values.server.url,
       dir: preliminary.values.server.dir,
       timeout: preliminary.values.server.timeout
+    }, {
+      forceDev: options.dev,
+      forceStatic: options.static !== undefined
     })
     detected = {
       command: plan.command,
       port: plan.port,
+      dir: plan.mode === 'static' ? plan.dir : undefined,
+      mode: plan.mode,
       framework: plan.framework,
       reason: plan.reason
     }
@@ -575,6 +604,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       hostname,
       zone,
       keep: options.keep,
+      overwrite: options.overwrite,
       autoStopAfterMs,
       configSource: source,
       signal: controller.signal,
@@ -923,10 +953,15 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
+    .option('--attach', 'Only attach; requires --url')
+    .option('--static [dir]', 'Serve a static directory')
+    .option('--dev', 'Force the dev script')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')
     .option('--subdomain <label>', 'Subdomain label or template')
+    .option('--allow-multilevel', 'Allow multi-level subdomains')
+    .option('--overwrite', 'Replace DNS records not created by this tool')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')
@@ -948,10 +983,15 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--port <port>', 'Preferred local port')
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
+    .option('--attach', 'Only attach; requires --url')
+    .option('--static [dir]', 'Serve a static directory')
+    .option('--dev', 'Force the dev script')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')
     .option('--subdomain <label>', 'Subdomain label or template')
+    .option('--allow-multilevel', 'Allow multi-level subdomains')
+    .option('--overwrite', 'Replace DNS records not created by this tool')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')

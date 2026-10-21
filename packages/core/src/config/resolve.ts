@@ -61,12 +61,19 @@ export interface ResolveConfigInput {
     command?: string
     port?: string | number
     url?: string
+    static?: string | true
+    attach?: boolean
+    dev?: boolean
+    overwrite?: boolean
+    allowMultilevel?: boolean
     autoStop?: string
     sessionId?: string
   }
   detected?: {
     command?: string
     port?: number
+    dir?: string
+    mode?: string
     framework?: string
     reason?: string
   }
@@ -185,7 +192,12 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
   }
   else if (zone) {
     try {
-      hostname = validateHostname(`${renderSubdomain({ cwd: input.cwd, template: subdomain, sessionId: cli.sessionId })}.${zone}`)
+      hostname = validateHostname(`${renderSubdomain({
+        cwd: input.cwd,
+        template: subdomain,
+        sessionId: cli.sessionId,
+        allowMultilevel: cli.allowMultilevel
+      })}.${zone}`)
       setSource('domain.hostname', 'default', `rendered from ${subdomain}`)
     }
     catch (error) {
@@ -199,12 +211,17 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
     : input.configFile ? configDir : resolve(input.cwd)
   setSource('server.cwd', serverCwdValue ? 'config' : 'default')
 
-  const directoryValue = optionalString(config.server?.dir)
-  const serverDir = directoryValue
+  const staticValue = typeof cli.static === 'string' ? cli.static : undefined
+  const directoryValue = staticValue ?? optionalString(config.server?.dir)
+  let serverDir = directoryValue
     ? isAbsolute(directoryValue) ? directoryValue : resolve(configDir, directoryValue)
     : undefined
   if (serverDir) {
-    setSource('server.dir', 'config')
+    setSource('server.dir', staticValue ? 'cli' : 'config')
+  }
+  else if (input.detected?.dir) {
+    serverDir = input.detected.dir
+    setSource('server.dir', 'detected')
   }
 
   const command = cli.command
@@ -250,6 +267,15 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
   }
   if (command && serverDir) {
     throw invalid('server.command and server.dir cannot be used together', 'Keep only one of server.command or server.dir')
+  }
+  if (cli.static !== undefined && url) {
+    throw invalid('--static cannot be used with --url', 'Use either --static or --url')
+  }
+  if (cli.attach && !url) {
+    throw invalid('--attach requires --url', 'Pass --url http://127.0.0.1:5173')
+  }
+  if (cli.attach && command) {
+    throw invalid('--attach cannot be used with server.command', 'Attach to a running server instead of starting one')
   }
 
   const modeCandidate = cli.mode
