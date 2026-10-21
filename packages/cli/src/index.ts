@@ -30,6 +30,7 @@ import {
   ProjectLockedError,
   reapSession,
   resolveConfig,
+  sameProject,
   startPreviewSession,
   validateAdapterCombination
 } from '@flash-tunnel/core'
@@ -914,7 +915,10 @@ function formatSession(state: SessionState): string {
 
 async function runClean(options: CleanOptions, reporter: Reporter): Promise<void> {
   if (!options.session && !options.stale && !options.all) {
-    const states = await listSessionStates()
+    const projectRoot = options.project ? resolve(options.project) : undefined
+    const states = (await listSessionStates())
+      .filter(state => !projectRoot || sameProject(state, projectRoot))
+
     if (states.length === 0) {
       reporter.human(`${theme.dim('No leftover sessions.')}\n`)
       return
