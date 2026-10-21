@@ -1,5 +1,5 @@
 import type { CleanSessionResult, PreviewSession, SessionCleaner, SessionState } from '@flash-tunnel/core'
-import type { TunnelMode } from '@flash-tunnel/types'
+import type { FlashTunnelEvents, TunnelMode } from '@flash-tunnel/types'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -9,6 +9,7 @@ import {
   cleanSession,
   cleanSessions,
   CleanupError,
+  Emitter,
   findStaleSessions,
   FlashTunnelError,
   isProcessAlive,
@@ -22,7 +23,8 @@ import {
 import { AdapterError } from '@flash-tunnel/types'
 import { parseDuration } from '@flash-tunnel/utils'
 import { cac } from 'cac'
-import { theme } from './ui/theme'
+import { Reporter } from './ui/reporter'
+import { theme, themeStderr } from './ui/theme'
 
 interface StartOptions {
   cwd?: string
@@ -37,6 +39,11 @@ interface StartOptions {
   autoStop?: string
   noSweep?: boolean
   sweep?: boolean
+  json?: boolean
+  silent?: boolean
+  readyFile?: string
+  onReady?: string
+  noOpen?: boolean
 }
 
 interface CleanOptions {
@@ -47,6 +54,8 @@ interface CleanOptions {
   dryRun?: boolean
   yes?: boolean
   force?: boolean
+  json?: boolean
+  silent?: boolean
 }
 
 type SignalReason = 'SIGINT' | 'SIGHUP' | 'SIGTERM'
@@ -215,13 +224,11 @@ function createCleaner(): SessionCleaner | undefined {
   }
 }
 
-async function sweepStale(projectRoot: string): Promise<void> {
+async function sweepStale(projectRoot: string, reporter: Reporter): Promise<void> {
   const { project, others } = await findStaleSessions(projectRoot)
 
   for (const state of others) {
-    process.stderr.write(
-      `${theme.warn('!')} leftover session ${state.sessionId} in ${state.projectRoot}; run flash-tunnel clean --stale\n`
-    )
+    reporter.warn(`leftover session ${state.sessionId} in ${state.projectRoot}; run flash-tunnel clean --stale`)
   }
 
   if (project.length === 0) {
@@ -232,23 +239,21 @@ async function sweepStale(projectRoot: string): Promise<void> {
 
   for (const state of project) {
     if (!cleaner && (state.dns || state.tunnel?.mode === 'named')) {
-      process.stderr.write(
-        `${theme.warn('!')} leftover session ${state.sessionId} needs CLOUDFLARE_API_TOKEN; run flash-tunnel clean --session ${state.sessionId}\n`
-      )
+      reporter.warn(`leftover session ${state.sessionId} needs CLOUDFLARE_API_TOKEN; run flash-tunnel clean --session ${state.sessionId}`)
       continue
     }
 
     const result = await cleanSession(state, { cleaner })
     if (result.status === 'removed') {
-      process.stdout.write(`${theme.dim('swept')} ${state.sessionId}\n`)
+      reporter.log(`${theme.dim('swept')} ${state.sessionId}\n`)
     }
     else if (result.status === 'failed') {
-      process.stderr.write(`${theme.warn('!')} sweep ${state.sessionId}: ${result.reasons.join('; ')}\n`)
+      reporter.warn(`sweep ${state.sessionId}: ${result.reasons.join('; ')}`)
     }
   }
 }
 
-async function startPreview(options: StartOptions): Promise<void> {
+async function startPreview(options: StartOptions, reporter: Reporter): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
 
   let loaded: Awaited<ReturnType<typeof loadFlashTunnelConfig>>
@@ -266,12 +271,12 @@ async function startPreview(options: StartOptions): Promise<void> {
   const { config, source } = loaded
 
   if (source) {
-    process.stdout.write(`${theme.dim('config')} ${source}\n`)
+    reporter.log(`${theme.dim('config')} ${source}\n`)
   }
 
   if (!options.noSweep && options.sweep !== false) {
-    await sweepStale(cwd).catch((error) => {
-      process.stderr.write(`${theme.warn('!')} sweep failed: ${errorMessage(error)}\n`)
+    await sweepStale(cwd, reporter).catch((error) => {
+      reporter.warn(`sweep failed: ${errorMessage(error)}`)
     })
   }
 
@@ -367,6 +372,45 @@ async function startPreview(options: StartOptions): Promise<void> {
     })
   }
 
+  const events = new Emitter<FlashTunnelEvents>()
+  events.on('server:ready', payload => reporter.event({
+    type: 'server:ready',
+    localUrl: payload.url,
+    startedByUs: payload.startedByUs,
+    durationMs: payload.durationMs
+  }))
+  events.on('tunnel:provisioned', payload => reporter.event({
+    type: 'tunnel:provisioned',
+    tunnelId: payload.tunnelId,
+    name: payload.name
+  }))
+  events.on('tunnel:connected', payload => reporter.event({
+    type: 'tunnel:connected',
+    connections: payload.connections
+  }))
+  events.on('dns:created', payload => reporter.event({
+    type: 'dns:created',
+    hostname: payload.hostname,
+    recordId: payload.recordId,
+    zoneId: payload.zoneId
+  }))
+  events.on('cleanup:step', payload => reporter.event({
+    type: 'cleanup:step',
+    kind: payload.kind,
+    status: payload.status,
+    ...(payload.detail ? { detail: payload.detail } : {})
+  }))
+  events.on('cleanup:done', payload => reporter.event({
+    type: 'cleanup',
+    ok: payload.ok,
+    removed: payload.removed,
+    failed: payload.failed
+  }))
+  events.on('autostop:expired', payload => reporter.event({
+    type: 'autostop',
+    expiresAt: new Date(payload.expiresAt).toISOString()
+  }))
+
   const controller = new AbortController()
   let interrupted: SignalReason | undefined
   const onEarlySignal = (signal: NodeJS.Signals): void => {
@@ -393,6 +437,7 @@ async function startPreview(options: StartOptions): Promise<void> {
       autoStopAfterMs,
       configSource: source,
       signal: controller.signal,
+      events,
       onLog: options.verbose
         ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
         : undefined
@@ -416,25 +461,36 @@ async function startPreview(options: StartOptions): Promise<void> {
 
   pendingReapSessionId = session.sessionId
 
-  process.stdout.write(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
+  reporter.human(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
   if (session.dns && session.hostname) {
-    process.stdout.write(`${theme.ok('✔')} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
+    reporter.human(`${theme.ok('✔')} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
   }
-  process.stdout.write(`${theme.ok('✔')} public ${theme.url(session.publicUrl)}\n`)
-  process.stdout.write(`${theme.dim('Press Ctrl+C to stop.')}\n`)
+  reporter.human(`${theme.ok('✔')} public ${theme.url(session.publicUrl)}\n`)
+
+  await reporter.ready({
+    type: 'ready',
+    url: session.publicUrl,
+    localUrl: session.localUrl,
+    hostname: session.hostname,
+    tunnelId: session.tunnel.tunnelId,
+    sessionId: session.sessionId,
+    expiresAt: session.expiresAt
+  })
+
+  reporter.human(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 
   if (options.keep) {
-    process.stderr.write(`${theme.warn('!')} --keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}\n`)
+    reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
   }
 
   const reason = await waitForStop(session)
 
   if (reason === 'tunnel-exit') {
-    process.stderr.write(`${theme.err('✖')} cloudflared exited unexpectedly\n`)
+    reporter.error(new Error('cloudflared exited unexpectedly'), 'TUNNEL_EXITED')
     process.exitCode = 5
   }
   else if (reason === 'server-exit') {
-    process.stderr.write(`${theme.err('✖')} dev server exited unexpectedly\n`)
+    reporter.error(new Error('dev server exited unexpectedly'), 'SERVER_EXITED')
     process.exitCode = 3
   }
   else if (reason === 'SIGINT') {
@@ -444,7 +500,7 @@ async function startPreview(options: StartOptions): Promise<void> {
     process.exitCode = 143
   }
   else {
-    process.stdout.write(`${theme.dim(reason === 'auto-stop' ? 'Auto-stop reached; cleaning up...' : 'Stopping...')}\n`)
+    reporter.log(`${theme.dim(reason === 'auto-stop' ? 'Auto-stop reached; cleaning up...' : 'Stopping...')}\n`)
   }
 
   const removeEscalation = installInterruptEscalation()
@@ -455,9 +511,11 @@ async function startPreview(options: StartOptions): Promise<void> {
   }
   catch (error) {
     if (error instanceof CleanupError) {
-      process.stderr.write(`${theme.err('✖')} cleanup incomplete\n`)
-      for (const failure of error.failures) {
-        process.stderr.write(`  ${failure.step}: ${failure.error}\n`)
+      if (!reporter.json) {
+        process.stderr.write(`${themeStderr.err('✖')} cleanup incomplete\n`)
+        for (const failure of error.failures) {
+          process.stderr.write(`  ${failure.step}: ${failure.error}\n`)
+        }
       }
       process.exitCode = 8
     }
@@ -473,7 +531,7 @@ async function startPreview(options: StartOptions): Promise<void> {
   }
 
   if (options.keep) {
-    process.stdout.write(`${theme.dim(`Kept resources. Clean up later: flash-tunnel clean --session ${session.sessionId}`)}\n`)
+    reporter.human(`${theme.dim(`Kept resources. Clean up later: flash-tunnel clean --session ${session.sessionId}`)}\n`)
   }
 }
 
@@ -483,17 +541,26 @@ function formatSession(state: SessionState): string {
   return `${state.sessionId}  ${state.state}  ${alive}  ${state.projectRoot}  ${target}`
 }
 
-async function runClean(options: CleanOptions): Promise<void> {
+async function runClean(options: CleanOptions, reporter: Reporter): Promise<void> {
   if (!options.session && !options.stale && !options.all) {
     const states = await listSessionStates()
     if (states.length === 0) {
-      process.stdout.write(`${theme.dim('No leftover sessions.')}\n`)
+      reporter.human(`${theme.dim('No leftover sessions.')}\n`)
       return
     }
     for (const state of states) {
-      process.stdout.write(`${formatSession(state)}\n`)
+      reporter.event({
+        type: 'session',
+        sessionId: state.sessionId,
+        state: state.state,
+        pid: state.pid,
+        alive: isProcessAlive(state.pid),
+        projectRoot: state.projectRoot,
+        target: state.dns?.hostname ?? state.tunnel?.publicUrl ?? null
+      })
+      reporter.human(`${formatSession(state)}\n`)
     }
-    process.stdout.write(`${theme.dim('Use --session <id>, --stale or --all --yes to clean.')}\n`)
+    reporter.human(`${theme.dim('Use --session <id>, --stale or --all --yes to clean.')}\n`)
     return
   }
 
@@ -504,26 +571,34 @@ async function runClean(options: CleanOptions): Promise<void> {
   const results = await cleanSessionsFor(options)
 
   if (results.length === 0) {
-    process.stdout.write(`${theme.dim('No matching sessions.')}\n`)
+    reporter.human(`${theme.dim('No matching sessions.')}\n`)
     return
   }
 
   let failed = 0
   for (const result of results) {
+    reporter.event({
+      type: 'clean',
+      sessionId: result.sessionId,
+      status: result.status,
+      actions: result.actions,
+      reasons: result.reasons
+    })
+
     const label = result.status === 'removed' || result.status === 'would-remove'
       ? theme.ok(result.status)
       : result.status === 'failed'
         ? theme.err(result.status)
         : theme.warn(result.status)
 
-    process.stdout.write(`${label} ${result.sessionId}`)
+    let line = `${label} ${result.sessionId}`
     if (result.actions.length > 0) {
-      process.stdout.write(`  ${result.actions.join(', ')}`)
+      line += `  ${result.actions.join(', ')}`
     }
     if (result.reasons.length > 0) {
-      process.stdout.write(`  ${result.reasons.join('; ')}`)
+      line += `  ${result.reasons.join('; ')}`
     }
-    process.stdout.write('\n')
+    reporter.human(`${line}\n`)
 
     if (result.status === 'failed') {
       failed += 1
@@ -577,15 +652,13 @@ function exitCodeFor(error: unknown): number {
   return 1
 }
 
-function reportError(error: unknown): void {
+function reportError(error: unknown, reporter: Reporter): void {
   const code = error instanceof FlashTunnelError || error instanceof AdapterError
-    ? ` ${theme.dim(`[${error.code}]`)}`
-    : ''
-  process.stderr.write(`${theme.err('✖')} ${errorMessage(error)}${code}\n`)
+    ? error.code
+    : undefined
+  const hint = error instanceof FlashTunnelError ? error.hint : undefined
 
-  if (error instanceof FlashTunnelError && error.hint) {
-    process.stderr.write(`  ${theme.dim('hint')} ${error.hint}\n`)
-  }
+  reporter.error(error, code, hint)
 
   if (process.env.FLASH_TUNNEL_DEBUG === '1' && error instanceof Error && error.stack) {
     process.stderr.write(`${error.stack}\n`)
@@ -595,20 +668,33 @@ function reportError(error: unknown): void {
 }
 
 async function runStart(options: StartOptions = {}): Promise<void> {
+  const reporter = new Reporter({
+    ...options,
+    cwd: resolve(options.cwd ?? process.cwd())
+  })
+
   try {
-    await startPreview(options)
+    await startPreview(options, reporter)
   }
   catch (error) {
-    reportError(error)
+    reportError(error, reporter)
+  }
+  finally {
+    reporter.exit(Number(process.exitCode ?? 0))
   }
 }
 
 async function runCleanCommand(options: CleanOptions = {}): Promise<void> {
+  const reporter = new Reporter({ ...options })
+
   try {
-    await runClean(options)
+    await runClean(options, reporter)
   }
   catch (error) {
-    reportError(error)
+    reportError(error, reporter)
+  }
+  finally {
+    reporter.exit(Number(process.exitCode ?? 0))
   }
 }
 
@@ -633,6 +719,10 @@ function findReapSessionId(argv: string[]): string | undefined {
 
 export async function runCli(argv: string[] = process.argv): Promise<void> {
   installExitReaper()
+
+  if (argv.includes('--no-color')) {
+    process.env.NO_COLOR = '1'
+  }
 
   if (argv.includes('__reap')) {
     const sessionId = findReapSessionId(argv)
@@ -660,6 +750,13 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .option('--ready-file <path>', 'Write the ready payload to a file')
+    .option('--on-ready <command>', 'Run a command once the preview is ready')
+    .option('--no-open', 'Do not open the preview in a browser')
+    .option('--no-color', 'Disable colors')
+    .option('--no-spinner', 'Disable the spinner')
     .action((_root: unknown, options: StartOptions = {}) => runStart(options))
 
   cli
@@ -675,6 +772,13 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--keep', 'Keep DNS and tunnel after exit')
     .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .option('--ready-file <path>', 'Write the ready payload to a file')
+    .option('--on-ready <command>', 'Run a command once the preview is ready')
+    .option('--no-open', 'Do not open the preview in a browser')
+    .option('--no-color', 'Disable colors')
+    .option('--no-spinner', 'Disable the spinner')
     .action((options: StartOptions = {}) => runStart(options))
 
   cli
@@ -686,6 +790,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--dry-run', 'Show what would be removed')
     .option('--yes', 'Confirm destructive clean')
     .option('--force', 'Allow cleaning a running session')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
     .action((options: CleanOptions = {}) => runCleanCommand(options))
 
   cli.help()

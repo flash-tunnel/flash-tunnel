@@ -59,6 +59,8 @@ export interface StartPreviewSessionOptions {
   configSource?: string
   /** Test hook: shrink the total cleanup budget. */
   cleanupBudgetMs?: number
+  /** Optional observer created by the caller so early events are not missed. */
+  events?: Emitter<FlashTunnelEvents>
 }
 
 export interface PreviewSession {
@@ -69,6 +71,7 @@ export interface PreviewSession {
   server: ServerHandle
   tunnel: TunnelHandle
   dns?: DnsRecordRef
+  expiresAt?: string
   exited: Promise<void>
   autoStopped?: Promise<void>
   events: Emitter<FlashTunnelEvents>
@@ -151,7 +154,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   const { cwd, config, adapters } = options
   const mode: TunnelMode = options.mode ?? config.tunnel?.mode ?? 'quick'
   const persist = options.persist ?? true
-  const events = new Emitter<FlashTunnelEvents>()
+  const events = options.events ?? new Emitter<FlashTunnelEvents>()
 
   if (!adapters.tunnel.capabilities.modes.includes(mode)) {
     throw new FlashTunnelError(`Tunnel adapter "${adapters.tunnel.id}" does not support mode "${mode}"`, {
@@ -578,6 +581,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       server,
       tunnel: handle,
       dns: dnsRef,
+      expiresAt: state?.expiresAt,
       exited: tunnelExited,
       autoStopped,
       events,
