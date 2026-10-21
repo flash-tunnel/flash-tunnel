@@ -67,6 +67,15 @@ describe('session state store', () => {
     expect(await listSessionStates()).toHaveLength(0)
   })
 
+  it('moves corrupt state files out of the index', async () => {
+    const sessions = join(home, 'sessions')
+    await mkdir(sessions, { recursive: true })
+    await writeFile(join(sessions, 'broken.json'), '{not json')
+
+    expect(await listSessionStates()).toHaveLength(0)
+    await expect(access(join(sessions, 'broken.json'))).rejects.toThrow()
+  })
+
   it('does not recreate a project directory that no longer exists', async () => {
     const missing = join(home, 'missing-project')
     await writeSessionState(createState({ projectRoot: missing }))

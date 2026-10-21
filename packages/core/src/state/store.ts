@@ -185,7 +185,13 @@ export async function listSessionStates(): Promise<SessionState[]> {
       states.push(JSON.parse(await readFile(join(directory, file), 'utf8')) as SessionState)
     }
     catch {
-      // Ignore corrupt state files; doctor can report them later.
+      // Keep corrupt files out of the active index so they cannot break clean.
+      const corruptDirectory = join(directory, '.corrupt')
+      await mkdir(corruptDirectory, { recursive: true, mode: 0o700 }).catch(() => {})
+      await rename(
+        join(directory, file),
+        join(corruptDirectory, `${Date.now()}-${file}`)
+      ).catch(() => {})
     }
   }
   return states.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
