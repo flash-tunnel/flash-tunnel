@@ -18,7 +18,8 @@ export async function findStaleSessions(
   now: number = Date.now()
 ): Promise<StaleSessions> {
   const states = await listSessionStates()
-  const stale = states.filter(state => isSessionStale(state, now))
+  // --keep sessions are intentional leftovers; only an explicit clean removes them.
+  const stale = states.filter(state => !state.cleanup.kept && isSessionStale(state, now))
 
   return {
     project: stale.filter(state => sameProject(state, projectRoot)),

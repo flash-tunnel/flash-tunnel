@@ -58,6 +58,16 @@ describe('findStaleSessions', () => {
     expect(result.others.map(state => state.sessionId)).toEqual(['ft_other'])
   })
 
+  it('does not auto-clean kept sessions', async () => {
+    await writeSessionState(createState({
+      sessionId: 'ft_kept',
+      cleanup: { required: false, attempts: 0, inProgress: false, kept: true }
+    }))
+
+    const result = await findStaleSessions(project)
+    expect(result.project).toHaveLength(0)
+  })
+
   it('ignores a live session with a fresh heartbeat', async () => {
     await writeSessionState(createState({
       sessionId: 'ft_live',
