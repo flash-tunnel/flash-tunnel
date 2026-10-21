@@ -41,6 +41,7 @@ import { isPortAvailable, runBuildScript } from './commands/build'
 import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
+import { copyToClipboard } from './ui/clipboard'
 import { openUrl } from './ui/open'
 import {
   canPrompt,
@@ -51,6 +52,7 @@ import {
   confirmQuickFallback
 } from './ui/prompts'
 import { Reporter } from './ui/reporter'
+import { installShortcuts } from './ui/shortcuts'
 import { StepUi } from './ui/steps'
 import { symbols } from './ui/symbols'
 import { theme, themeStderr } from './ui/theme'
@@ -114,7 +116,7 @@ interface DoctorCommandOptions {
 }
 
 type SignalReason = 'SIGINT' | 'SIGHUP' | 'SIGTERM'
-type StopReason = SignalReason | 'auto-stop' | 'fatal' | 'server-exit' | 'tunnel-exit'
+type StopReason = SignalReason | 'auto-stop' | 'fatal' | 'quit' | 'server-exit' | 'tunnel-exit'
 
 interface StopOutcome {
   reason: StopReason
@@ -140,7 +142,7 @@ function readVersion(): string {
   }
 }
 
-function waitForStop(session: PreviewSession): Promise<StopOutcome> {
+function waitForStop(session: PreviewSession, quit?: Promise<void>): Promise<StopOutcome> {
   return new Promise((resolveStop) => {
     let finished = false
 
@@ -189,6 +191,7 @@ function waitForStop(session: PreviewSession): Promise<StopOutcome> {
       }
     })
     session.autoStopped?.then(() => finish('auto-stop'))
+    quit?.then(() => finish('quit'))
     session.server.exited?.then(() => {
       if (!session.stopping) {
         finish('server-exit')
@@ -845,13 +848,38 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     openUrl(session.publicUrl)
   }
 
-  reporter.human(`${theme.dim('Press Ctrl+C to stop.')}\n`)
+  reporter.human(`${theme.dim('Press Ctrl+C to stop. c copies the URL, o opens it, q quits.')}\n`)
 
   if (keep) {
     reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
   }
 
-  const { reason, error: fatalError } = await waitForStop(session)
+  let requestQuit: () => void = () => {}
+  const quit = new Promise<void>((resolveQuit) => {
+    requestQuit = resolveQuit
+  })
+  const disposeShortcuts = installShortcuts({
+    onQuit: () => requestQuit(),
+    onCopy: () => {
+      if (copyToClipboard(session.publicUrl)) {
+        reporter.log(`${theme.dim('copied')} ${session.publicUrl}\n`)
+      }
+      else {
+        reporter.warn('No clipboard tool found; copy the URL manually')
+      }
+    },
+    onOpen: () => openUrl(session.publicUrl)
+  })
+
+  let outcome: StopOutcome
+  try {
+    outcome = await waitForStop(session, quit)
+  }
+  finally {
+    disposeShortcuts()
+  }
+
+  const { reason, error: fatalError } = outcome
 
   if (reason === 'fatal') {
     reportError(fatalError ?? new Error('Unexpected failure'), reporter)
