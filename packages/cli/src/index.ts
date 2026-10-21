@@ -23,6 +23,9 @@ import {
 import { AdapterError } from '@flash-tunnel/types'
 import { parseDuration } from '@flash-tunnel/utils'
 import { cac } from 'cac'
+import { runDoctor } from './commands/doctor'
+import { runInit } from './commands/init'
+import { runProviders } from './commands/providers'
 import { Reporter } from './ui/reporter'
 import { theme, themeStderr } from './ui/theme'
 
@@ -54,6 +57,19 @@ interface CleanOptions {
   dryRun?: boolean
   yes?: boolean
   force?: boolean
+  json?: boolean
+  silent?: boolean
+}
+
+interface InitCommandOptions {
+  cwd?: string
+  force?: boolean
+  json?: boolean
+  silent?: boolean
+}
+
+interface DoctorCommandOptions {
+  cwd?: string
   json?: boolean
   silent?: boolean
 }
@@ -698,6 +714,44 @@ async function runCleanCommand(options: CleanOptions = {}): Promise<void> {
   }
 }
 
+async function runInitCommand(options: InitCommandOptions = {}): Promise<void> {
+  const reporter = new Reporter({
+    ...options,
+    cwd: resolve(options.cwd ?? process.cwd())
+  })
+
+  try {
+    await runInit(options, reporter)
+  }
+  catch (error) {
+    reportError(error, reporter)
+  }
+  finally {
+    reporter.exit(Number(process.exitCode ?? 0))
+  }
+}
+
+async function runDoctorCommand(options: DoctorCommandOptions = {}): Promise<void> {
+  const reporter = new Reporter({
+    ...options,
+    cwd: resolve(options.cwd ?? process.cwd())
+  })
+
+  try {
+    await runDoctor(options, reporter)
+  }
+  catch (error) {
+    reportError(error, reporter)
+  }
+  finally {
+    reporter.exit(Number(process.exitCode ?? 0))
+  }
+}
+
+function runProvidersCommand(options: { json?: boolean, silent?: boolean } = {}): void {
+  runProviders(new Reporter(options))
+}
+
 async function runReapCommand(sessionId: string, force: boolean): Promise<void> {
   try {
     const result = await reapSession(sessionId, { cleaner: createCleaner(), force })
@@ -793,6 +847,27 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--json', 'Machine-readable NDJSON on stdout')
     .option('--silent', 'Only print errors')
     .action((options: CleanOptions = {}) => runCleanCommand(options))
+
+  cli
+    .command('doctor', 'Check the environment and configuration')
+    .option('--cwd <dir>', 'Project directory')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .action((options: DoctorCommandOptions = {}) => runDoctorCommand(options))
+
+  cli
+    .command('init', 'Create flash-tunnel.ts and ignore .flash-tunnel/')
+    .option('--cwd <dir>', 'Project directory')
+    .option('--force', 'Overwrite an existing flash-tunnel.ts')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .action((options: InitCommandOptions = {}) => runInitCommand(options))
+
+  cli
+    .command('providers', 'List available adapters')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .action((options: { json?: boolean, silent?: boolean } = {}) => runProvidersCommand(options))
 
   cli.help()
   cli.version(readVersion())
