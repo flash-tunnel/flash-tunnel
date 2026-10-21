@@ -74,7 +74,7 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
     return api
   }
 
-  function ensureCloudflared(): void {
+  function ensureCloudflared(): string {
     const check = spawnSync(cloudflaredPath, ['--version'], {
       encoding: 'utf8',
       shell: process.platform === 'win32',
@@ -89,6 +89,8 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
         cause: check.error
       })
     }
+
+    return `${check.stdout ?? ''}${check.stderr ?? ''}`.trim()
   }
 
   function capture(chunk: Buffer, hooks: TunnelHooks): void {
@@ -143,9 +145,15 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
       concurrent: true
     },
 
-    async preflight(_ctx: AdapterContext, { mode }: { mode: TunnelMode }): Promise<void> {
+    async preflight(ctx: AdapterContext, { mode }: { mode: TunnelMode }): Promise<void> {
       plannedMode = mode
-      ensureCloudflared()
+      const version = ensureCloudflared()
+      const match = /cloudflared version (\d{4})\.(\d+)/i.exec(version)
+      if (match && Number(match[1]) < 2024) {
+        ctx.logger.warn(
+          `cloudflared ${match[1]}.${match[2]} is old; upgrade to a recent release for reliable tunnels`
+        )
+      }
 
       if (mode === 'named') {
         const client = requireApi()
