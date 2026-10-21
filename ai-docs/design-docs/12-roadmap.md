@@ -26,7 +26,7 @@
 **交付**
 
 - pnpm workspace、七个包骨架（版本统一 `0.0.0`）、根配置（ESLint/tsconfig/vitest/unbuild/hooks/CI）。
-- `.github/workflows/ci.yaml` 与 `release.yaml` 落盘；`release.yaml` 先不触发（等 0.1.0 tag）。
+- `.github/workflows/release.yaml` 落盘（仅 `v*` tag 触发，verify 通过才 publish）；不存在 push/PR 的 ci.yaml。
 - `packages/types` 的契约与错误类型；`packages/config` 的 `defineConfig` 与配置类型；`packages/cli` 的 `runCli` 骨架；`packages/flash-tunnel` 的 bin 与重导出。
 - CLI 输出骨架：`ui/output.ts`（human/json 双通道）、`theme.ts`（`styleText`）、`symbols.ts`、spinner 封装（`handleSignals: false`）。
 - `flash-tunnel --version` / `--help` 可运行（`pnpm ft`）。
@@ -92,11 +92,11 @@
 - 二维码/剪贴板/自动打开；非 TTY 降级；`--no-spinner`/`--no-color`。
 - 文档：README、配置参考、Cloudflare Token 创建指引、故障排查。
 - `@flash-tunnel/testing` 一致性测试套件（可选，若时间允许）。
-- 发布：本地 `0.0.0` 占位发布（`--tag bootstrap`）→ CI 全绿 → 配置 Trusted Publisher（2 天内完成首发）→ `bumpp` 到 `0.1.0` → tag 触发 OIDC 发布。
+- 发布：本地 `0.0.0` 占位发布（`--tag bootstrap`）→ 本地自查通过 → 配置 Trusted Publisher（2 天内完成首发）→ `bumpp` 到 `0.1.0` → tag 触发 OIDC 发布。
 
 **验收**
 
-- CI 矩阵（Linux/Windows × Node 22/24）通过。
+- release verify 矩阵（Linux/Windows × Node 22/24）通过。
 - 七个包在 npm 上存在；六个 `@flash-tunnel/*` 的 `0.0.0` 只挂 `bootstrap`，`flash-tunnel@0.0.0` 的 `latest` 在 0.1.0 发布后被覆盖为 `0.1.0`。
 - npm 包设置里 Trusted Publisher 指向 `release.yaml`，发布日志无 Token、有 provenance。
 - 干净机器 `npx flash-tunnel@0.1.0` 按 README 步骤可跑通。

@@ -15,8 +15,8 @@
 - [ ] `packages/flash-tunnel/bin/flash-tunnel.mjs` 可执行位与 shebang
 - [ ] `.gitignore`（`node_modules`、`dist`、`.flash-tunnel/`、`coverage`、`*.log`）
 - [ ] `.editorconfig`、`LICENSE`、`README.md` 骨架
-- [ ] `.github/workflows/ci.yaml`（push/PR、concurrency、Linux/Windows × Node 22/24）
-- [ ] `.github/workflows/release.yaml`（tag 触发、`id-token: write`、Node 24、无 NPM_TOKEN）
+- [ ] 只有 `.github/workflows/release.yaml`（仅 `v*` tag 触发；verify 矩阵 Linux/Windows × Node 22/24，通过后才 publish）
+- [ ] 不存在 push/PR 触发的 ci.yaml；需要独立 check 时只能 `workflow_call` 由 release.yaml 调用
 - [ ] `pnpm lint && pnpm typecheck && pnpm build && pnpm test` 全绿
 
 ## 契约与类型（03）
@@ -156,7 +156,7 @@
 - [ ] Windows 进程树停止测试
 - [ ] E2E（gated）创建 → 验证 → 清理 → 断言无残留
 - [ ] kill -9 恢复测试
-- [ ] CI 矩阵通过
+- [ ] release verify 矩阵通过（tag 触发）
 
 ## 发布
 
@@ -167,7 +167,7 @@
 - [ ] 删除预发布版本 `0.0.0-stage`（72h 内）：`npm unpublish flash-tunnel@0.0.0-stage`
 - [ ] 保留 `flash-tunnel@0.0.0` 现状（`latest` 不动，不加 deprecate），等 0.1.0 覆盖
 - [ ] npm 上七个包均存在，`repository` 与 GitHub 仓库完全一致
-- [ ] `main` 的 CI 全绿（Linux/Windows × Node 22/24）
+- [ ] 本地 lint/typecheck/test/build 通过（tag 前的唯一门禁）
 - [ ] 七个包分别配置 Trusted Publisher（GitHub Actions / `flash-tunnel/flash-tunnel` / `release.yaml` / 允许 `npm publish`）
 - [ ] 记住 2 天验证窗口：配置后当天发 `0.1.0`
 - [ ] `pnpm release` 将七个包从 `0.0.0` 升到 `0.1.0`，push `v0.1.0` tag

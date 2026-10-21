@@ -204,17 +204,21 @@ pnpm test:e2e
 - [ ] 手机 4G 网络访问链接可用。
 - [ ] 隧道运行中断网再恢复，链接恢复可用（cloudflared 自动重连）。
 
-## CI 矩阵
+## CI（仅 tag 触发）
 
 ```yaml
+on:
+  push:
+    tags: ['v*']
 strategy:
   matrix:
     os: [ubuntu-latest, windows-latest]
     node: [22, 24]
 ```
 
-- `pnpm lint`、`pnpm typecheck`、`pnpm test`（单元 + 集成 mock）、`pnpm build`。
+- 没有 push/PR 触发的 workflow；日常提交不产生 Actions 运行，合并前本地跑同一组命令。
+- `release.yaml` 只有一个入口（tag），内部 `verify` job 跑矩阵、`publish` job `needs: verify`。
+- `verify` 执行 `pnpm lint`、`pnpm typecheck`、`pnpm test`（单元 + 集成 mock）、`pnpm build`。
 - 单独 job 跑 E2E（nightly，仓库 secrets，仅主仓库）。
 - 发布前在干净容器里 `npx flash-tunnel --version` 冒烟，验证 `bin` 与依赖打包正确。
-- tag 触发的 `release.yaml` 会重复跑 lint/typecheck/test/build：**发布门禁不依赖前一个 workflow 的结论**。
 - 首次发布链路单独演练一次：`0.0.0 --tag bootstrap` 占位 → 配置 Trusted Publisher → `0.1.0` tag 发布（详见 11 的发布流程）。

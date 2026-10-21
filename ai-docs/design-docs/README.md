@@ -6,7 +6,7 @@
 
 > 当前状态：设计阶段，仓库内只有 `ai-docs/design-docs`，尚无实现代码。
 >
-> 版本策略：所有可发布包从 `0.0.0` 起步；`flash-tunnel@0.0.0` 是已发布的占位包，其余六个 `@flash-tunnel/*` 用 `bootstrap` 标签占位；`0.1.0` 在 CI 全绿且 npm Trusted Publisher 配置完成后通过 tag 发布。
+> 版本策略：所有可发布包从 `0.0.0` 起步；`flash-tunnel@0.0.0` 是已发布的占位包，其余六个 `@flash-tunnel/*` 用 `bootstrap` 标签占位；`0.1.0` 在 release verify 通过且 npm Trusted Publisher 配置完成后通过 tag 发布。
 
 ## 预期使用形态
 

@@ -8,8 +8,7 @@
 flash-tunnel/
 ├─ .github/
 │  └─ workflows/
-│     ├─ ci.yaml
-│     └─ release.yaml
+│     └─ release.yaml            # 唯一 workflow，仅 tag v* 触发
 ├─ ai-docs/
 │  └─ design-docs/                 # 本目录
 ├─ packages/
@@ -99,7 +98,7 @@ flash-tunnel/
 }
 ```
 
-> **版本从 `0.0.0` 开始**：根包 `private: true` 不发布；七个子包统一 `0.0.0`。其中 `flash-tunnel@0.0.0` 已由本地首次发布占位，其余六个 `@flash-tunnel/*` 用 `bootstrap` 标签补发；正式版本 `0.1.0` 在 CI 全绿且 Trusted Publisher 配置完成后发布（见「发布流程」）。
+> **版本从 `0.0.0` 开始**：根包 `private: true` 不发布；七个子包统一 `0.0.0`。其中 `flash-tunnel@0.0.0` 已由本地首次发布占位，其余六个 `@flash-tunnel/*` 用 `bootstrap` 标签补发；正式版本 `0.1.0` 在 release verify 通过且 Trusted Publisher 配置完成后发布（见「发布流程」）。
 >
 > `packageManager` 用 `pnpm@12.12.1`：该版本的 `pnpm publish` 已支持 OIDC（含 `NPM_ID_TOKEN` 的 `aud` 校验），是可信发布链路的最小版本。
 >
@@ -107,7 +106,7 @@ flash-tunnel/
 >
 > 版本号以脚手架创建时 `pnpm add` 的解析结果为准；上表对齐参考仓库当前主版本（ESLint 10、antfu config 9、Vitest 5、unbuild 3、bumpp 12）。
 >
-> `engines.node >= 22.14` 的原因：Node 20 已 EOL；`styleText` 在 22.13 稳定（20.12+ 可用，20.18+ 起尊重 `NO_COLOR`/`FORCE_COLOR`）；同时与 npm 可信发布要求的 Node ≥22.14 对齐。CI 矩阵用 22/24 覆盖下限与当前 LTS。
+> `engines.node >= 22.14` 的原因：Node 20 已 EOL；`styleText` 在 22.13 稳定（20.12+ 可用，20.18+ 起尊重 `NO_COLOR`/`FORCE_COLOR`）；同时与 npm 可信发布要求的 Node ≥22.14 对齐。verify 矩阵用 22/24 覆盖下限与当前 LTS。
 
 ## `pnpm-workspace.yaml`
 
@@ -424,28 +423,28 @@ packages/cli/src/
 - 不在 pre-commit 跑 typecheck/test：CLI 项目全量类型检查耗时明显，交给 CI。
 - 提交信息建议 Conventional Commits（`feat:` / `fix:` / `docs:` / `refactor:` / `chore:`），便于 `bumpp` 生成 CHANGELOG（如后续启用）。
 
-## CI
+## GitHub Actions（仅 tag 触发）
 
-`.github/workflows/ci.yaml`（对齐 `ext-kit` / `nano-staged` 的矩阵与 Action 版本）：
+只有一个 workflow：`.github/workflows/release.yaml`，触发条件仅 `push.tags: ['v*']`；**不监听 push/PR**，也不存在独立的 `ci.yaml`。
+
+workflow 内分两个 job：
+
+1. `verify`：矩阵 Linux/Windows × Node 22/24，跑 `install → lint → typecheck → test → build`。
+2. `publish`：`needs: verify`，只有 verify 全绿才执行，用 OIDC 发布。
 
 ```yaml
-name: CI
+name: Release
 
 on:
   push:
-    branches: [main]
-  pull_request:
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    tags: ['v*']
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+  verify:
+    name: verify · ${{ matrix.os }} · Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -465,29 +464,15 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-```
 
-- `pnpm/action-setup` 不写 `version`：从 `package.json#packageManager` 读取（参考 `ext-kit` 的注释）。
-- Windows 必须进矩阵：进程树停止、路径、`styleText` 的 TTY 行为都依赖平台。
-- 只有 `main` 的 CI 全绿才允许打 tag。
-
-`.github/workflows/release.yaml`（tag 触发、OIDC 发布，不使用任何 Token）：
-
-```yaml
-name: Release
-
-on:
-  push:
-    tags: ['v*']
-
-permissions:
-  id-token: write   # npm Trusted Publishing 的 OIDC 交换
-  contents: read
-
-jobs:
-  release:
+  publish:
+    name: publish
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      id-token: write   # npm Trusted Publishing 的 OIDC 交换
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -502,9 +487,16 @@ jobs:
       - name: Ensure npm CLI >= 11.5.1
         run: npm i -g npm@latest
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint && pnpm typecheck && pnpm test && pnpm build
+      - run: pnpm build
       - run: pnpm -r publish --access public --no-git-checks
 ```
+
+说明：
+
+- `pnpm/action-setup` 不写 `version`：从 `package.json#packageManager` 读取（参考 `ext-kit` 的注释）。
+- Windows 必须进 verify 矩阵：进程树停止、路径、`styleText` 的 TTY 行为都依赖平台。
+- 因为只有 tag 触发，日常提交不会产生 Actions 运行；合并/发布前由本地 `pnpm lint && pnpm typecheck && pnpm test && pnpm build` 自查。
+- 如果以后要拆出可复用的 check workflow，只能用 `workflow_call` 并由 `release.yaml` 调用，触发入口仍然是 tag。
 
 约束（来自 npm 可信发布文档，容易踩）：
 
@@ -555,10 +547,11 @@ pnpm --filter "@flash-tunnel/*" -r publish --access public --tag bootstrap --no-
   必须在发布后 72 小时内操作；超过窗口只能联系 npm 支持。删除后 `npm view flash-tunnel versions` 只剩 `0.0.0`。
 - 发布后到 npm 页面确认七个包都存在、`repository` 链接正确。
 
-### 阶段 1 · CI 全绿
+### 阶段 1 · tag 前的本地自查（建议）
 
-- `main` 上的 `ci.yaml` 在 Linux + Windows、Node 22/24 全部通过。
-- 本地 Node 24 冒烟不是发布门槛，但发 tag 前建议跑一次。
+- 因为 workflow 只在 tag 触发，push/PR 不会跑 Actions；发 tag 前在本地跑 `pnpm lint && pnpm typecheck && pnpm test && pnpm build`。
+- 本地 Node 24 冒烟不是发布门槛，但建议跑一次。
+- 如果 tag 后的 `verify` 失败，`publish` 会被跳过；修复后需要换一个新版本号重新打 tag（不要复用旧 tag）。
 
 ### 阶段 2 · 配置 Trusted Publisher（临近发布再做）
 
@@ -572,7 +565,7 @@ pnpm --filter "@flash-tunnel/*" -r publish --access public --tag bootstrap --no-
 | Environment name | 留空 |
 | Allowed actions | 勾选 `npm publish`（不需要 dist-tag） |
 
-注意：**新建的可信发布配置必须在 2 天内完成第一次成功发布**，否则配置过期，只能删除重建。所以不要在 0.0.0 之后立刻配置然后长期不发布；等 CI 全绿、准备发 0.1.0 时再配置，并在当天完成 tag 发布。
+注意：**新建的可信发布配置必须在 2 天内完成第一次成功发布**，否则配置过期，只能删除重建。所以不要在 0.0.0 之后立刻配置然后长期不发布；等本地自查通过、准备发 0.1.0 时再配置，并在当天完成 tag 发布。
 
 ### 阶段 3 · 发布 0.1.0
 
@@ -581,12 +574,12 @@ pnpm release          # bumpp -r：全部包 0.0.0 → 0.1.0，提交并打 v0.1
 git push --follow-tags
 ```
 
-tag 触发 `release.yaml`：安装依赖 → lint/typecheck/test/build → `pnpm -r publish`，通过 OIDC 完成发布并生成 provenance。
+tag 触发 `release.yaml`：先跑 `verify`（Linux/Windows × Node 22/24 的 lint/typecheck/test/build），全部通过后 `publish` 才执行 `pnpm -r publish`，通过 OIDC 完成发布并生成 provenance。
 
 发布后检查：
 
 - npm 上七个包都是 `0.1.0`，`latest` 指向 `0.1.0`。
-- 0.0.0 只保留 `bootstrap` 标签。
+- 六个 `@flash-tunnel/*` 的 `0.0.0` 只保留 `bootstrap` 标签；`flash-tunnel@0.0.0` 的 `latest` 已被 0.1.0 覆盖。
 - 安装冒烟：`npx flash-tunnel@0.1.0 --version`。
 - 首次 OIDC 发布成功后，把七个包的 Settings → Publishing access 改为 “Require two-factor authentication and disallow tokens”，此后只允许可信发布。
 - 后续版本重复阶段 3；`bumpp -r` 保持七个包同版本。
