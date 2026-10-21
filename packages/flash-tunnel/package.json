@@ -3,9 +3,13 @@
   "type": "module",
   "version": "0.0.0",
   "license": "MIT",
+  "homepage": "https://github.com/flash-tunnel/flash-tunnel#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/flash-tunnel/flash-tunnel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flash-tunnel/flash-tunnel/issues"
   },
   "exports": {
     ".": {
