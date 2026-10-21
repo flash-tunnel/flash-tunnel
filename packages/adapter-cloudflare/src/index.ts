@@ -1,3 +1,7 @@
+export { CloudflareApi } from './api'
+export type { CloudflareAccount, CloudflareDnsRecord, CloudflareTunnel, CloudflareZone } from './api'
+export { createCloudflareDns } from './dns'
+export type { CloudflareDnsOptions } from './dns'
 export { cloudflareTunnel, createCloudflareTunnel } from './tunnel'
 export type { CloudflareTunnelOptions } from './tunnel'
 

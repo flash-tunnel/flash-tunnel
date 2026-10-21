@@ -3,8 +3,8 @@ import type { TunnelMode } from '@flash-tunnel/types'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { createCloudflareTunnel } from '@flash-tunnel/adapter-cloudflare'
-import { loadFlashTunnelConfig, startPreviewSession } from '@flash-tunnel/core'
+import { CloudflareApi, createCloudflareDns, createCloudflareTunnel } from '@flash-tunnel/adapter-cloudflare'
+import { loadFlashTunnelConfig, resolveHostname, startPreviewSession } from '@flash-tunnel/core'
 import { cac } from 'cac'
 import { theme } from './ui/theme'
 
@@ -52,7 +52,7 @@ function waitForStop(session: PreviewSession): Promise<StopReason> {
 
 function parseMode(value: string | undefined): TunnelMode {
   if (!value) {
-    return 'quick'
+    return 'named'
   }
   if (value === 'quick' || value === 'named') {
     return value
@@ -69,26 +69,83 @@ async function startPreview(options: StartOptions): Promise<void> {
   }
 
   const provider = config.providers?.cloudflare as
-    | { accountId?: string, cloudflaredPath?: string }
+    | {
+      accountId?: string
+      cloudflaredPath?: string
+      zoneId?: string
+      originRequest?: { httpHostHeader?: string, noTLSVerify?: boolean }
+    }
     | undefined
+
+  const mode = parseMode(options.mode)
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN
+  const apiBase = process.env.FLASH_TUNNEL_CLOUDFLARE_API_BASE
+  let zone = process.env.FLASH_TUNNEL_ZONE ?? config.domain?.zone
+
+  if (mode === 'named' && !apiToken) {
+    throw new Error('Named mode requires CLOUDFLARE_API_TOKEN; use --mode quick for a temporary domain')
+  }
+
+  if (mode === 'named' && !zone && apiToken) {
+    const api = new CloudflareApi({ apiToken, apiBase })
+    const zones = (await api.listZones()).filter(item => item.status === 'active')
+
+    if (zones.length === 1 && zones[0]) {
+      zone = zones[0].name
+    }
+    else if (zones.length === 0) {
+      throw new Error('No active Cloudflare zone found; set domain.zone in flash-tunnel.ts')
+    }
+    else {
+      throw new Error(`Multiple zones found (${zones.map(item => item.name).join(', ')}); set domain.zone`)
+    }
+  }
+
+  if (mode === 'named' && !zone) {
+    throw new Error('Named mode requires domain.zone in flash-tunnel.ts or FLASH_TUNNEL_ZONE')
+  }
+
+  const hostname = mode === 'named' && zone
+    ? process.env.FLASH_TUNNEL_HOSTNAME
+    ?? resolveHostname({
+      cwd,
+      zone,
+      subdomain: config.domain?.subdomain
+    })
+    : undefined
 
   const tunnel = createCloudflareTunnel({
     cloudflaredPath: process.env.FLASH_TUNNEL_CLOUDFLARED ?? provider?.cloudflaredPath,
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? provider?.accountId,
-    apiToken: process.env.CLOUDFLARE_API_TOKEN
+    apiToken,
+    apiBase,
+    originRequest: provider?.originRequest
   })
+
+  const dns = mode === 'named' && apiToken
+    ? createCloudflareDns({
+        apiToken,
+        zoneId: process.env.CLOUDFLARE_ZONE_ID ?? provider?.zoneId,
+        apiBase
+      })
+    : undefined
 
   const session = await startPreviewSession({
     cwd,
     config,
-    adapters: { tunnel },
-    mode: parseMode(options.mode),
+    adapters: { tunnel, dns },
+    mode,
+    hostname,
+    zone,
     onLog: options.verbose
       ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
       : undefined
   })
 
   process.stdout.write(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
+  if (session.dns && session.hostname) {
+    process.stdout.write(`${theme.ok('✔')} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
+  }
   process.stdout.write(`${theme.ok('✔')} public ${theme.url(session.publicUrl)}\n`)
   process.stdout.write(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 

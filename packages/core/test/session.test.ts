@@ -1,4 +1,4 @@
-import type { TunnelAdapter } from '@flash-tunnel/types'
+import type { DnsAdapter, DnsRecordRef, TunnelAdapter } from '@flash-tunnel/types'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -51,6 +51,87 @@ function createFakeTunnel(): TunnelAdapter {
   }
 }
 
+function createFakeDns(sequence: string[]): DnsAdapter {
+  return {
+    kind: 'dns',
+    id: 'fake-dns',
+    apiVersion: 1,
+    capabilities: {
+      recordTypes: ['CNAME'],
+      proxied: true,
+      ttl: true,
+      comment: true,
+      lookupByName: true
+    },
+    preflight: async () => {
+      sequence.push('dns:preflight')
+    },
+    ensure: async (_ctx, spec) => {
+      sequence.push('dns:ensure')
+      const ref: DnsRecordRef = {
+        provider: 'fake-dns',
+        zoneId: 'zone-1',
+        recordId: 'record-1',
+        name: spec.name,
+        type: spec.type,
+        content: spec.content,
+        proxied: spec.proxied ?? true
+      }
+      return ref
+    },
+    remove: async () => {
+      sequence.push('dns:remove')
+    },
+    find: async () => []
+  }
+}
+
+function createFakeTunnelWithDns(sequence: string[]): TunnelAdapter {
+  let localUrl = ''
+
+  return {
+    kind: 'tunnel',
+    id: 'fake-tunnel',
+    apiVersion: 1,
+    capabilities: {
+      modes: ['named'],
+      publicHostname: 'custom',
+      requiresDns: false,
+      concurrent: true
+    },
+    preflight: async () => {
+      sequence.push('tunnel:preflight')
+    },
+    provision: async (_ctx, spec) => {
+      sequence.push('tunnel:provision')
+      localUrl = spec.localUrl
+      return {
+        provider: 'fake-tunnel',
+        tunnelId: 'tunnel-1',
+        name: spec.name,
+        publicUrl: localUrl,
+        dns: {
+          type: 'CNAME',
+          target: 'tunnel-1.cfargotunnel.com',
+          proxied: true
+        },
+        secrets: {},
+        meta: { localUrl }
+      }
+    },
+    start: async () => {
+      sequence.push('tunnel:start')
+    },
+    waitReady: async () => ({ state: 'connected', connections: 1, publicUrl: localUrl }),
+    stop: async () => {
+      sequence.push('tunnel:stop')
+    },
+    deprovision: async () => {
+      sequence.push('tunnel:deprovision')
+    }
+  }
+}
+
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map(session => session.stop().catch(() => {})))
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
@@ -90,5 +171,56 @@ describe('startPreviewSession', () => {
 
     await session.stop()
     await expect(fetch(session.localUrl)).rejects.toThrow()
+  })
+
+  it('creates the dns record before start and removes it before deprovision', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('dns-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+    const sequence: string[] = []
+
+    const session = await startPreviewSession({
+      cwd,
+      config: {
+        server: {
+          command: 'node server.mjs',
+          port: 0
+        }
+      },
+      adapters: {
+        tunnel: createFakeTunnelWithDns(sequence),
+        dns: createFakeDns(sequence)
+      },
+      mode: 'named',
+      hostname: 'demo.example.com',
+      zone: 'example.com',
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    expect(session.hostname).toBe('demo.example.com')
+    expect(session.dns).toMatchObject({
+      name: 'demo.example.com',
+      type: 'CNAME',
+      content: 'tunnel-1.cfargotunnel.com'
+    })
+    expect(sequence).toEqual([
+      'tunnel:preflight',
+      'tunnel:provision',
+      'dns:preflight',
+      'dns:ensure',
+      'tunnel:start'
+    ])
+
+    await session.stop()
+
+    expect(sequence.indexOf('dns:remove')).toBeGreaterThan(sequence.indexOf('tunnel:stop'))
+    expect(sequence.indexOf('tunnel:deprovision')).toBeGreaterThan(sequence.indexOf('dns:remove'))
   })
 })
