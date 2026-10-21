@@ -150,8 +150,8 @@
 - [x] 状态文件原子写与损坏恢复
 - [x] Cloudflare 适配器 MockAgent 用例（鉴权、冲突、token 兜底、429、404、连接清理）
 - [x] 适配器一致性套件（若交付 `@flash-tunnel/testing`）
-- [ ] UI 单测：`NO_COLOR`/`FORCE_COLOR` 下的输出、非 TTY 无动画、`--json` 纯净 stdout
-- [ ] prompts 取消（`ExitPromptError`）路径测试
+- [x] UI 单测：`NO_COLOR`/`FORCE_COLOR` 下的输出、非 TTY 无动画、`--json` 纯净 stdout
+- [x] prompts 取消（`ExitPromptError`）路径测试
 - [ ] 集成测试（fake 适配器 + 真实子进程信号）
 - [ ] Windows 进程树停止测试
 - [ ] E2E（gated）创建 → 验证 → 清理 → 断言无残留

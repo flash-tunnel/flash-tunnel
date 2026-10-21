@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { AdapterError } from '@flash-tunnel/types'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readSessionState, sessionLogPath, startPreviewSession } from '../src'
+import { CleanupError, readSessionState, sessionLogPath, startPreviewSession } from '../src'
 
 const directories: string[] = []
 const sessions: Array<{ stop: () => Promise<void> }> = []
@@ -392,5 +392,49 @@ describe('startPreviewSession', () => {
 
     expect(session.stopping).toBe(true)
     expect(await readSessionState(cwd)).toBeUndefined()
+  })
+
+  it('keeps retryable state when a cleanup step exceeds the budget', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('timeout-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+    const sequence: string[] = []
+    const dns = createFakeDns(sequence)
+    dns.remove = async () => new Promise<void>(() => {})
+
+    const session = await startPreviewSession({
+      cwd,
+      config: { server: { command: 'node server.mjs', port: 0 } },
+      adapters: { tunnel: createFakeTunnelWithDns(sequence), dns },
+      mode: 'named',
+      hostname: 'timeout.example.com',
+      zone: 'example.com',
+      cleanupBudgetMs: 800,
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    let failure: unknown
+    try {
+      await session.stop()
+    }
+    catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(CleanupError)
+    expect((failure as CleanupError).failures.some(item => item.step === 'dns.remove')).toBe(true)
+
+    const state = await readSessionState(cwd)
+    expect(state?.cleanup.required).toBe(true)
+    expect(state?.cleanup.attempts).toBe(1)
+
+    await session.server.stop()
   })
 })
