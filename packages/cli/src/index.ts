@@ -37,6 +37,7 @@ import { isPortAvailable, runBuildScript } from './commands/build'
 import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
+import { openUrl } from './ui/open'
 import { canPrompt, choosePortConflict, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
 import { Reporter } from './ui/reporter'
 import { StepUi } from './ui/steps'
@@ -534,6 +535,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     detectionError = error
   }
 
+  let reusedPort = false
   if (detected?.port && detected.port > 0 && !preliminary.values.server.url && !options.attach) {
     if (!await isPortAvailable(detected.port)) {
       const reuse = options.reuse
@@ -554,6 +556,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
         framework: detected.framework,
         reason: `port ${detected.port} is in use; reusing the running server`
       }
+      reusedPort = true
     }
   }
 
@@ -592,6 +595,14 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   const hostname = mode === 'named' ? resolved.values.domain.hostname : undefined
   const autoStopAfterMs = resolved.values.autoStopAfter
   const effectiveConfig = buildEffectiveConfig(config, resolved)
+  if (reusedPort) {
+    effectiveConfig.server = {
+      ...effectiveConfig.server,
+      command: undefined,
+      dir: undefined,
+      url: `http://127.0.0.1:${detected?.port}`
+    }
+  }
 
   const tunnel = createCloudflareTunnel({
     cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
@@ -741,6 +752,16 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     sessionId: session.sessionId,
     expiresAt: session.expiresAt
   })
+
+  if (
+    !options.noOpen
+    && !reporter.json
+    && process.stdout.isTTY
+    && !process.env.CI
+    && process.env.FLASH_TUNNEL_NO_OPEN !== '1'
+  ) {
+    openUrl(session.publicUrl)
+  }
 
   reporter.human(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 
