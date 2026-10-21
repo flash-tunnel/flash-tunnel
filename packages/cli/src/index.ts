@@ -36,6 +36,7 @@ import { cac } from 'cac'
 import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
+import { canPrompt, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
 import { Reporter } from './ui/reporter'
 import { StepUi } from './ui/steps'
 import { theme, themeStderr } from './ui/theme'
@@ -67,6 +68,7 @@ interface StartOptions {
   onReady?: string
   noOpen?: boolean
   spinner?: boolean
+  yes?: boolean
 }
 
 interface CleanOptions {
@@ -414,11 +416,16 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   })
 
   if (preliminary.values.tunnel.mode === 'named' && !apiToken && !options.dryRun) {
-    throw new FlashTunnelError('Named mode requires CLOUDFLARE_API_TOKEN', {
-      code: 'AUTH_MISSING',
-      exitCode: 4,
-      hint: 'Export CLOUDFLARE_API_TOKEN, or use --mode quick for a temporary domain'
-    })
+    if (canPrompt(options) && await confirmQuickFallback()) {
+      cliConfig.mode = 'quick'
+    }
+    else {
+      throw new FlashTunnelError('Named mode requires CLOUDFLARE_API_TOKEN', {
+        code: 'AUTH_MISSING',
+        exitCode: 4,
+        hint: 'Export CLOUDFLARE_API_TOKEN, or use --mode quick for a temporary domain'
+      })
+    }
   }
 
   let inferredZone: string | undefined
@@ -431,6 +438,9 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     }
     else if (zones.length === 0) {
       zoneIssue = 'No active Cloudflare zone is visible to this token'
+    }
+    else if (canPrompt(options)) {
+      inferredZone = await chooseZone(zones)
     }
     else {
       zoneIssue = `Multiple zones found (${zones.map(item => item.name).join(', ')})`
@@ -537,6 +547,14 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     reporter.warn(warning)
   }
 
+  let keep = options.keep ?? false
+  if (keep && canPrompt(options)) {
+    keep = await confirmKeep()
+    if (!keep) {
+      reporter.log(`${theme.dim('--keep cancelled; resources will be removed on exit.')}\n`)
+    }
+  }
+
   const events = new Emitter<FlashTunnelEvents>()
   events.on('server:ready', payload => reporter.event({
     type: 'server:ready',
@@ -603,7 +621,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       mode,
       hostname,
       zone,
-      keep: options.keep,
+      keep,
       overwrite: options.overwrite,
       autoStopAfterMs,
       configSource: source,
@@ -650,7 +668,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   reporter.human(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 
-  if (options.keep) {
+  if (keep) {
     reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
   }
 
@@ -701,7 +719,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     }
   }
 
-  if (options.keep) {
+  if (keep) {
     reporter.human(`${theme.dim(`Kept resources. Clean up later: flash-tunnel clean --session ${session.sessionId}`)}\n`)
   }
 }
@@ -974,6 +992,7 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--no-open', 'Do not open the preview in a browser')
     .option('--no-color', 'Disable colors')
     .option('--no-spinner', 'Disable the spinner')
+    .option('-y, --yes', 'Disable prompts and use defaults')
     .action((_root: unknown, options: StartOptions = {}) => runStart(options))
 
   cli
@@ -1004,6 +1023,7 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--no-open', 'Do not open the preview in a browser')
     .option('--no-color', 'Disable colors')
     .option('--no-spinner', 'Disable the spinner')
+    .option('-y, --yes', 'Disable prompts and use defaults')
     .action((options: StartOptions = {}) => runStart(options))
 
   cli
