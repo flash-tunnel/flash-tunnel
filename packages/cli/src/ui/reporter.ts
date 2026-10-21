@@ -56,6 +56,9 @@ export class Reporter {
   }
 
   warn(message: string): void {
+    if (this.silent) {
+      return
+    }
     process.stderr.write(`${themeStderr.warn(symbols.warn)} ${message}\n`)
   }
 

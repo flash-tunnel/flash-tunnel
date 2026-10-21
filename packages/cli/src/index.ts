@@ -18,6 +18,7 @@ import {
   cleanSessions,
   CleanupError,
   detectServer,
+  detectWorkspaceCandidates,
   Emitter,
   findStaleSessions,
   FlashTunnelError,
@@ -40,7 +41,14 @@ import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
 import { openUrl } from './ui/open'
-import { canPrompt, choosePortConflict, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
+import {
+  canPrompt,
+  choosePortConflict,
+  chooseWorkspace,
+  chooseZone,
+  confirmKeep,
+  confirmQuickFallback
+} from './ui/prompts'
 import { Reporter } from './ui/reporter'
 import { StepUi } from './ui/steps'
 import { symbols } from './ui/symbols'
@@ -435,7 +443,8 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     })
   }
 
-  const { config, source } = loaded
+  const { config: loadedConfig, source } = loaded
+  let config = loadedConfig
 
   if (source) {
     reporter.log(`${theme.dim('config')} ${source}\n`)
@@ -465,7 +474,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     autoStop: options.autoStop
   }
 
-  const preliminary = resolveConfig({
+  let preliminary = resolveConfig({
     cwd,
     config,
     configFile: source,
@@ -549,6 +558,50 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   }
   catch (error) {
     detectionError = error
+
+    if (/No runnable script/.test(errorMessage(error))) {
+      const candidates = detectWorkspaceCandidates(cwd)
+
+      if (candidates.length > 0) {
+        if (!canPrompt(options)) {
+          throw new FlashTunnelError('No runnable script found in the project root', {
+            code: 'WORKSPACE_REQUIRED',
+            exitCode: 2,
+            hint: `Pass --cwd <path>. Candidates: ${candidates.map(candidate => candidate.cwd).join(', ')}`
+          })
+        }
+
+        const choice = await chooseWorkspace(candidates)
+        config = { ...config, server: { ...config.server, cwd: choice.cwd } }
+        preliminary = resolveConfig({ cwd, config, configFile: source, cli: cliConfig })
+
+        try {
+          const plan = detectServer(cwd, {
+            cwd: preliminary.values.server.cwd,
+            command: preliminary.values.server.command,
+            port: preliminary.values.server.port,
+            url: preliminary.values.server.url,
+            dir: preliminary.values.server.dir,
+            timeout: preliminary.values.server.timeout
+          }, {
+            forceDev: options.dev,
+            forceStatic: options.static !== undefined
+          })
+          detected = {
+            command: plan.command,
+            port: plan.port,
+            dir: plan.mode === 'static' ? plan.dir : undefined,
+            mode: plan.mode,
+            framework: plan.framework,
+            reason: plan.reason
+          }
+          detectionError = undefined
+        }
+        catch (retryError) {
+          detectionError = retryError
+        }
+      }
+    }
   }
 
   let reusedPort = false

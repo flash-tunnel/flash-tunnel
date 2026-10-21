@@ -1,4 +1,5 @@
 import type { CloudflareZone } from '@flash-tunnel/adapter-cloudflare'
+import type { WorkspaceCandidate } from '@flash-tunnel/core'
 import process from 'node:process'
 import { FlashTunnelError } from '@flash-tunnel/core'
 import { confirm, select } from '@inquirer/prompts'
@@ -49,6 +50,21 @@ export async function confirmQuickFallback(): Promise<boolean> {
     return await confirm({
       message: 'CLOUDFLARE_API_TOKEN is not set. Use a temporary trycloudflare.com domain instead?',
       default: false
+    })
+  }
+  catch (error) {
+    promptFailure(error)
+  }
+}
+
+export async function chooseWorkspace(candidates: WorkspaceCandidate[]): Promise<WorkspaceCandidate> {
+  try {
+    return await select<WorkspaceCandidate>({
+      message: 'Select the workspace to preview',
+      choices: candidates.map(candidate => ({
+        name: `${candidate.name}  ${candidate.cwd}`,
+        value: candidate
+      }))
     })
   }
   catch (error) {

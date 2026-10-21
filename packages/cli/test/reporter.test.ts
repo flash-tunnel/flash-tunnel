@@ -58,13 +58,19 @@ describe('reporter', () => {
     expect(err.join('')).toContain('careful')
   })
 
-  it('suppresses human output in silent mode but keeps events', () => {
+  it('suppresses human output in silent mode but keeps events and errors', () => {
     const reporter = new Reporter({ json: true, silent: true })
 
     reporter.human('hello\n')
+    reporter.warn('careful')
     reporter.event({ type: 'ready' })
+    reporter.error(new Error('boom'))
 
-    expect(out).toEqual(['{"type":"ready"}\n'])
+    expect(out).toEqual([
+      '{"type":"ready"}\n',
+      '{"type":"error","message":"boom"}\n'
+    ])
+    expect(err).toEqual([])
   })
 
   it('writes the ready payload to a file', async () => {
