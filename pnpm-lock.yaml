@@ -226,9 +226,18 @@ importers:
 
   packages/core:
     dependencies:
+      '@flash-tunnel/config':
+        specifier: workspace:*
+        version: link:../config
       '@flash-tunnel/utils':
         specifier: workspace:*
         version: link:../utils
+      pathe:
+        specifier: ^2.0.3
+        version: 2.0.3
+      unconfig:
+        specifier: ^7.5.0
+        version: 7.5.0
 
   packages/flash-tunnel:
     dependencies:

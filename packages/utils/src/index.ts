@@ -1,6 +1,32 @@
 import { randomBytes } from 'node:crypto'
+import { stripVTControlCharacters } from 'node:util'
 
 const RANDOM_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
+
+export function stripAnsi(input: string): string {
+  return stripVTControlCharacters(input)
+}
+
+export function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'))
+      return
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+
+    function onAbort(): void {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new Error('Aborted'))
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 export function randomId(length = 4): string {
   if (!Number.isInteger(length) || length <= 0) {
