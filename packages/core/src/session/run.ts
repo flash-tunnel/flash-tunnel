@@ -194,6 +194,27 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
   }
 
+  const stepStarts = new Map<string, number>()
+  let activeStep: string | undefined
+
+  const emitStep = (id: string, status: 'fail' | 'ok' | 'start', detail?: string): void => {
+    const now = Date.now()
+    if (status === 'start') {
+      stepStarts.set(id, now)
+      activeStep = id
+    }
+    const startedAt = stepStarts.get(id)
+    events.emit('step', {
+      id,
+      status,
+      detail,
+      durationMs: status === 'start' ? undefined : now - (startedAt ?? now)
+    })
+    if (status !== 'start' && activeStep === id) {
+      activeStep = undefined
+    }
+  }
+
   const transition = async (to: SessionPhase): Promise<void> => {
     if (!state) {
       return
@@ -209,6 +230,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
 
   const serverStartedAt = Date.now()
   const plan = detectServer(cwd, config.server)
+  emitStep('server', 'start')
   let server: ServerHandle
   try {
     server = await startServer(plan, {
@@ -218,6 +240,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     })
   }
   catch (error) {
+    emitStep('server', 'fail', errorMessage(error))
     await releaseProjectLock(cwd, sessionId).catch(() => {})
     if (state) {
       await removeSessionState(state).catch(() => {})
@@ -227,6 +250,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       { code: 'SERVER_START_FAILED', exitCode: 3, cause: error }
     )
   }
+  emitStep('server', 'ok', server.url)
 
   events.emit('server:detected', {
     command: plan.command ?? plan.mode,
@@ -438,12 +462,14 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
 
   try {
     await transition('provisioning-tunnel')
+    emitStep('tunnel', 'start')
     await adapters.tunnel.preflight(ctx, { mode })
     handle = await adapters.tunnel.provision(ctx, {
       name: tunnelName,
       localUrl: server.url,
       hostname: options.hostname
     })
+    emitStep('tunnel', 'ok', handle.name)
 
     if (state) {
       state.tunnel = {
@@ -468,6 +494,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         throw new Error('A hostname and zone are required for the DNS record')
       }
 
+      emitStep('dns', 'start')
       await adapters.dns.preflight(ctx, {
         zone: options.zone,
         name: options.hostname,
@@ -482,6 +509,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         ttl: 1,
         comment: `flash-tunnel:${sessionId}`
       })
+      emitStep('dns', 'ok', dnsRef.name)
 
       if (state) {
         state.dns = {
@@ -518,6 +546,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
 
     const verifyStartedAt = Date.now()
+    emitStep('verify', 'start')
     const status = await adapters.tunnel.waitReady(ctx, handle, 30_000)
     events.emit('tunnel:connected', { connections: status.connections })
     const publicUrl = status.publicUrl ?? handle.publicUrl
@@ -526,8 +555,9 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       throw new Error('Tunnel did not provide a public URL')
     }
 
+    let verified
     try {
-      await verifyPublicUrl(publicUrl, {
+      verified = await verifyPublicUrl(publicUrl, {
         timeoutMs: options.verifyTimeoutMs ?? 60_000,
         signal: options.signal
       })
@@ -538,6 +568,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         { code: 'PUBLIC_VERIFY_FAILED', exitCode: 7, hint: 'Check cloudflared connectivity and try again', cause: error }
       )
     }
+    emitStep('verify', 'ok', `HTTP ${verified.status}`)
     events.emit('public:ready', { url: publicUrl, verifyMs: Date.now() - verifyStartedAt })
 
     if (state) {
@@ -597,6 +628,10 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
     if (autoStopTimer) {
       clearTimeout(autoStopTimer)
+    }
+
+    if (activeStep) {
+      emitStep(activeStep, 'fail', errorMessage(error))
     }
 
     stopping = true

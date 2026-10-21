@@ -1,3 +1,4 @@
+export * from './adapters'
 export * from './clean'
 export * from './config'
 export * from './domain'

@@ -134,6 +134,12 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
       modes: ['named', 'quick'],
       publicHostname: 'both',
       requiresDns: false,
+      dns: {
+        type: 'CNAME',
+        targetFrom: 'handle',
+        proxied: true,
+        providerAffinity: ['cloudflare']
+      },
       concurrent: true
     },
 

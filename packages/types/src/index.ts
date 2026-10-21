@@ -170,6 +170,7 @@ export interface TunnelAdapter {
 export interface FlashTunnelEvents {
   'state': { from: string, to: string }
   'log': { level: 'debug' | 'info' | 'warn' | 'error', scope: string, message: string }
+  'step': { id: string, status: 'fail' | 'ok' | 'start', detail?: string, durationMs?: number }
   'server:detected': { command: string, cwd: string, confidence: 'high' | 'low', reason: string }
   'server:ready': { url: string, port: number, startedByUs: boolean, durationMs: number }
   'tunnel:provisioned': { tunnelId: string, name: string }

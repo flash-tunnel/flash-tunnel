@@ -20,7 +20,8 @@ import {
   ProjectLockedError,
   reapSession,
   resolveConfig,
-  startPreviewSession
+  startPreviewSession,
+  validateAdapterCombination
 } from '@flash-tunnel/core'
 import { AdapterError } from '@flash-tunnel/types'
 import { formatDuration } from '@flash-tunnel/utils'
@@ -29,6 +30,7 @@ import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
 import { Reporter } from './ui/reporter'
+import { StepUi } from './ui/steps'
 import { theme, themeStderr } from './ui/theme'
 
 interface StartOptions {
@@ -52,6 +54,7 @@ interface StartOptions {
   readyFile?: string
   onReady?: string
   noOpen?: boolean
+  spinner?: boolean
 }
 
 interface CleanOptions {
@@ -491,6 +494,20 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       })
     : undefined
 
+  const combination = validateAdapterCombination({
+    tunnel,
+    dns,
+    mode,
+    requested: {
+      hostname: Boolean(options.hostname ?? process.env.FLASH_TUNNEL_HOSTNAME),
+      zone: Boolean(options.zone ?? process.env.FLASH_TUNNEL_ZONE ?? config.domain?.zone),
+      subdomain: Boolean(options.subdomain ?? config.domain?.subdomain)
+    }
+  })
+  for (const warning of combination.warnings) {
+    reporter.warn(warning)
+  }
+
   const events = new Emitter<FlashTunnelEvents>()
   events.on('server:ready', payload => reporter.event({
     type: 'server:ready',
@@ -529,6 +546,11 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     type: 'autostop',
     expiresAt: new Date(payload.expiresAt).toISOString()
   }))
+
+  const steps = new StepUi(reporter, {
+    enabled: options.spinner === false ? false : undefined
+  })
+  events.on('step', payload => steps.handle(payload))
 
   const controller = new AbortController()
   let interrupted: SignalReason | undefined

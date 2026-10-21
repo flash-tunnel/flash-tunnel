@@ -36,6 +36,7 @@
     "@flash-tunnel/core": "workspace:*",
     "@flash-tunnel/types": "workspace:*",
     "@flash-tunnel/utils": "workspace:*",
-    "cac": "^7.0.0"
+    "cac": "^7.0.0",
+    "yocto-spinner": "^1.2.2"
   }
 }
