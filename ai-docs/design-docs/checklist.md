@@ -83,7 +83,7 @@
 ## 编排与状态（02/08）
 
 - [x] 状态机与非法转换保护
-- [ ] 资源账本（kind/provider/ref/origin/owned/dispose）
+- [x] 资源账本（kind/provider/ref/origin/owned/dispose）
 - [x] 逆序回滚、单步失败不阻断、超时预算
 - [x] 会话 id、项目锁、心跳（15s）
 - [x] 状态文件原子写（tmp + rename）、权限 0600
@@ -146,7 +146,7 @@
 - [x] 配置加载/模板/校验/来源标注单测
 - [x] 新配置面外没有遗留字段（编译期即可发现）
 - [x] 探测 fixture 单测（含 monorepo、锁文件、输出解析、preview 降级）
-- [ ] 账本/回滚/超时/幂等单测
+- [x] 账本/回滚/超时/幂等单测
 - [x] 状态文件原子写与损坏恢复
 - [x] Cloudflare 适配器 MockAgent 用例（鉴权、冲突、token 兜底、429、404、连接清理）
 - [x] 适配器一致性套件（若交付 `@flash-tunnel/testing`）

@@ -11,6 +11,7 @@ import type {
 } from '@flash-tunnel/types'
 import type { ServerHandle } from '../server/types'
 import type { SessionPhase, SessionState } from '../state/store'
+import type { LedgerKind } from './ledger'
 import { basename } from 'node:path'
 import process from 'node:process'
 import { AdapterError } from '@flash-tunnel/types'
@@ -27,7 +28,8 @@ import {
   writeSessionState
 } from '../state/store'
 import { verifyPublicUrl } from '../tunnel/verify'
-import { createSessionId } from './id'
+import { CORE_API_VERSION, createSessionId } from './id'
+import { ResourceLedger } from './ledger'
 
 const CLEANUP_TIMEOUTS = {
   tunnelStop: 8_000,
@@ -38,6 +40,13 @@ const CLEANUP_TIMEOUTS = {
 } as const
 
 const CLEANUP_BUDGET_MS = 30_000
+
+const CLEANUP_STEPS: Record<LedgerKind, { name: string, timeoutMs: number, attempts: number }> = {
+  'tunnel-process': { name: 'tunnel.stop', timeoutMs: CLEANUP_TIMEOUTS.tunnelStop, attempts: 1 },
+  'dns': { name: 'dns.remove', timeoutMs: CLEANUP_TIMEOUTS.dnsRemove, attempts: 3 },
+  'tunnel': { name: 'tunnel.deprovision', timeoutMs: CLEANUP_TIMEOUTS.tunnelDeprovision, attempts: 3 },
+  'server': { name: 'server.stop', timeoutMs: CLEANUP_TIMEOUTS.serverStop, attempts: 1 }
+}
 
 const ALLOWED_TRANSITIONS: Record<SessionPhase, readonly SessionPhase[]> = {
   'starting': ['server-ready'],
@@ -319,10 +328,24 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     now: Date.now
   }
 
+  const ledger = new ResourceLedger()
+  const origin = {
+    sessionId,
+    createdAt: Date.now(),
+    version: CORE_API_VERSION.toString()
+  }
+  ledger.add({
+    kind: 'server',
+    provider: 'local',
+    ref: { url: server.url, pid: server.pid },
+    origin,
+    owned: true,
+    dispose: () => server.stop()
+  })
+
   const tunnelName = config.tunnel?.name ?? `flash-tunnel-${slugify(basename(cwd))}-${randomId(4)}`
   let handle: TunnelHandle | undefined
   let dnsRef: DnsRecordRef | undefined
-  let tunnelStarted = false
   let stopPromise: Promise<void> | undefined
   let stopping = false
   let heartbeatTimer: NodeJS.Timeout | undefined
@@ -373,58 +396,50 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       }
     }
 
-    if (handle) {
+    const drainTunnel = async (): Promise<void> => {
+      if (!handle) {
+        return
+      }
       const current = handle
-
-      if (tunnelStarted) {
-        await step('tunnel.stop', CLEANUP_TIMEOUTS.tunnelStop, () => adapters.tunnel.stop(ctx, current))
-        tunnelStarted = false
-      }
-
       const statusFn = adapters.tunnel.status
-      if (statusFn) {
-        events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'start' })
-        try {
-          const startedAt = Date.now()
-          while (Date.now() - startedAt < CLEANUP_TIMEOUTS.tunnelDrain) {
-            const status = await statusFn(ctx, current)
-            if (status.connections === 0) {
-              break
-            }
-            await sleep(300)
-          }
-          events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'ok' })
-        }
-        catch (error) {
-          // Draining is best-effort; deprovision retries force-clean connections.
-          events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'skip', detail: errorMessage(error) })
-        }
-      }
-      else {
+      if (!statusFn) {
         events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'skip', detail: 'adapter has no status()' })
+        return
       }
 
-      if (!options.keep && dnsRef && adapters.dns) {
-        const ref = dnsRef
-        if (await step('dns.remove', CLEANUP_TIMEOUTS.dnsRemove, () => adapters.dns!.remove(ctx, ref), 3)) {
-          dnsRef = undefined
+      events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'start' })
+      try {
+        const startedAt = Date.now()
+        while (Date.now() - startedAt < CLEANUP_TIMEOUTS.tunnelDrain) {
+          const status = await statusFn(ctx, current)
+          if (status.connections === 0) {
+            break
+          }
+          await sleep(300)
         }
+        events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'ok' })
       }
-      else if (options.keep) {
-        events.emit('cleanup:step', { kind: 'dns.remove', status: 'skip', detail: '--keep' })
-      }
-
-      if (!options.keep) {
-        if (await step('tunnel.deprovision', CLEANUP_TIMEOUTS.tunnelDeprovision, () => adapters.tunnel.deprovision(ctx, current), 3)) {
-          handle = undefined
-        }
-      }
-      else {
-        events.emit('cleanup:step', { kind: 'tunnel.deprovision', status: 'skip', detail: '--keep' })
+      catch (error) {
+        // Draining is best-effort; deprovision retries force-clean connections.
+        events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'skip', detail: errorMessage(error) })
       }
     }
 
-    await step('server.stop', CLEANUP_TIMEOUTS.serverStop, () => server.stop())
+    for (const entry of ledger.reversed()) {
+      const config = CLEANUP_STEPS[entry.kind]
+
+      if (!entry.owned) {
+        events.emit('cleanup:step', { kind: config.name, status: 'skip', detail: '--keep' })
+        continue
+      }
+
+      await step(config.name, config.timeoutMs, entry.dispose, config.attempts)
+      if (entry.kind === 'tunnel-process') {
+        await drainTunnel()
+      }
+    }
+
+    ledger.clear()
 
     return { failures, removed }
   }
@@ -507,6 +522,16 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     })
     emitStep('tunnel', 'ok', handle.name)
 
+    const provisionedHandle = handle
+    ledger.add({
+      kind: 'tunnel',
+      provider: provisionedHandle.provider,
+      ref: { tunnelId: provisionedHandle.tunnelId },
+      origin,
+      owned: !options.keep,
+      dispose: () => adapters.tunnel.deprovision(ctx, provisionedHandle)
+    })
+
     if (state) {
       state.tunnel = {
         provider: handle.provider,
@@ -549,6 +574,16 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       })
       emitStep('dns', 'ok', dnsRef.name)
 
+      const createdDns = dnsRef
+      ledger.add({
+        kind: 'dns',
+        provider: createdDns.provider,
+        ref: createdDns,
+        origin,
+        owned: !options.keep,
+        dispose: () => adapters.dns!.remove(ctx, createdDns)
+      })
+
       if (state) {
         state.dns = {
           provider: dnsRef.provider,
@@ -577,10 +612,18 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         resolveTunnelExit()
       }
     })
-    tunnelStarted = true
+    const startedHandle = handle
+    const tunnelPid = Number(handle.meta?.processPid)
+    ledger.add({
+      kind: 'tunnel-process',
+      provider: startedHandle.provider,
+      ref: { pid: Number.isInteger(tunnelPid) ? tunnelPid : undefined },
+      origin,
+      owned: true,
+      dispose: () => adapters.tunnel.stop(ctx, startedHandle)
+    })
 
     if (state) {
-      const tunnelPid = Number(handle.meta?.processPid)
       if (Number.isInteger(tunnelPid) && tunnelPid > 0) {
         state.processes = [{ kind: 'cloudflared', pid: tunnelPid }]
         await saveState()
