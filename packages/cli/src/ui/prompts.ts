@@ -56,6 +56,21 @@ export async function confirmQuickFallback(): Promise<boolean> {
   }
 }
 
+export async function choosePortConflict(port: number): Promise<'exit' | 'reuse'> {
+  try {
+    return await select<'exit' | 'reuse'>({
+      message: `Port ${port} is already in use`,
+      choices: [
+        { name: 'Reuse the server already running on this port', value: 'reuse' },
+        { name: 'Exit', value: 'exit' }
+      ]
+    })
+  }
+  catch (error) {
+    promptFailure(error)
+  }
+}
+
 export async function confirmKeep(): Promise<boolean> {
   try {
     return await confirm({

@@ -33,10 +33,11 @@ import {
 import { AdapterError } from '@flash-tunnel/types'
 import { formatDuration } from '@flash-tunnel/utils'
 import { cac } from 'cac'
+import { isPortAvailable, runBuildScript } from './commands/build'
 import { runDoctor } from './commands/doctor'
 import { runInit } from './commands/init'
 import { runProviders } from './commands/providers'
-import { canPrompt, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
+import { canPrompt, choosePortConflict, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
 import { Reporter } from './ui/reporter'
 import { StepUi } from './ui/steps'
 import { theme, themeStderr } from './ui/theme'
@@ -54,6 +55,8 @@ interface StartOptions {
   static?: string | boolean
   attach?: boolean
   dev?: boolean
+  build?: boolean
+  reuse?: boolean
   overwrite?: boolean
   allowMultilevel?: boolean
   dryRun?: boolean
@@ -415,6 +418,10 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     cli: cliConfig
   })
 
+  if (options.build && !options.dryRun) {
+    runBuildScript(preliminary.values.server.cwd, reporter)
+  }
+
   if (preliminary.values.tunnel.mode === 'named' && !apiToken && !options.dryRun) {
     if (canPrompt(options) && await confirmQuickFallback()) {
       cliConfig.mode = 'quick'
@@ -451,6 +458,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     command?: string
     port?: number
     dir?: string
+    url?: string
     mode?: string
     framework?: string
     reason?: string
@@ -479,6 +487,29 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   }
   catch (error) {
     detectionError = error
+  }
+
+  if (detected?.port && detected.port > 0 && !preliminary.values.server.url && !options.attach) {
+    if (!await isPortAvailable(detected.port)) {
+      const reuse = options.reuse
+        || (canPrompt(options) && await choosePortConflict(detected.port) === 'reuse')
+
+      if (!reuse) {
+        throw new FlashTunnelError(`Port ${detected.port} is already in use`, {
+          code: 'PORT_IN_USE',
+          exitCode: 3,
+          hint: 'Stop the other process, pass --port <n>, or use --reuse'
+        })
+      }
+
+      detected = {
+        port: detected.port,
+        url: `http://127.0.0.1:${detected.port}`,
+        mode: 'attach',
+        framework: detected.framework,
+        reason: `port ${detected.port} is in use; reusing the running server`
+      }
+    }
   }
 
   const resolved = resolveConfig({
@@ -974,6 +1005,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--attach', 'Only attach; requires --url')
     .option('--static [dir]', 'Serve a static directory')
     .option('--dev', 'Force the dev script')
+    .option('--build', 'Run the build script before starting')
+    .option('--reuse', 'Reuse a server already listening on the port')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')
@@ -1005,6 +1038,8 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--attach', 'Only attach; requires --url')
     .option('--static [dir]', 'Serve a static directory')
     .option('--dev', 'Force the dev script')
+    .option('--build', 'Run the build script before starting')
+    .option('--reuse', 'Reuse a server already listening on the port')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
     .option('--zone <domain>', 'Cloudflare zone')
     .option('--hostname <fqdn>', 'Full public hostname')

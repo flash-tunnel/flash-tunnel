@@ -73,6 +73,7 @@ export interface ResolveConfigInput {
     command?: string
     port?: number
     dir?: string
+    url?: string
     mode?: string
     framework?: string
     reason?: string
@@ -236,12 +237,12 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
     )
   }
 
-  const url = cli.url ?? optionalString(config.server?.url)
+  const url = cli.url ?? optionalString(config.server?.url) ?? input.detected?.url
   if (url) {
     if (!URL.canParse(url)) {
       throw invalid(`server.url is not a valid URL: "${url}"`, 'Use http://127.0.0.1:5173 or https://...')
     }
-    setSource('server.url', cli.url ? 'cli' : 'config')
+    setSource('server.url', cli.url ? 'cli' : config.server?.url ? 'config' : 'detected')
   }
 
   const portCandidate = cli.port
