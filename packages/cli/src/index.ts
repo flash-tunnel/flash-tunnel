@@ -40,6 +40,7 @@ import { runProviders } from './commands/providers'
 import { canPrompt, choosePortConflict, chooseZone, confirmKeep, confirmQuickFallback } from './ui/prompts'
 import { Reporter } from './ui/reporter'
 import { StepUi } from './ui/steps'
+import { symbols } from './ui/symbols'
 import { theme, themeStderr } from './ui/theme'
 
 interface StartOptions {
@@ -187,7 +188,7 @@ function waitForStop(session: PreviewSession): Promise<StopOutcome> {
 /** The second Ctrl+C during cleanup exits immediately; the state file is reaped on next start. */
 function installInterruptEscalation(): () => void {
   const onSignal = (signal: NodeJS.Signals): void => {
-    process.stderr.write(`\n${theme.warn('!')} forced exit (${signal}); leftover resources will be cleaned by the next run\n`)
+    process.stderr.write(`\n${theme.warn(symbols.warn)} forced exit (${signal}); leftover resources will be cleaned by the next run\n`)
     process.exit(signal === 'SIGINT' ? 130 : 143)
   }
 
@@ -725,11 +726,11 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   pendingReapSessionId = session.sessionId
 
-  reporter.human(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
+  reporter.human(`${theme.ok(symbols.ok)} local  ${theme.url(session.localUrl)}\n`)
   if (session.dns && session.hostname) {
-    reporter.human(`${theme.ok('✔')} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
+    reporter.human(`${theme.ok(symbols.ok)} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
   }
-  reporter.human(`${theme.ok('✔')} public ${theme.url(session.publicUrl)}\n`)
+  reporter.human(`${theme.ok(symbols.ok)} public ${theme.url(session.publicUrl)}\n`)
 
   await reporter.ready({
     type: 'ready',
@@ -780,7 +781,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   catch (error) {
     if (error instanceof CleanupError) {
       if (!reporter.json) {
-        process.stderr.write(`${themeStderr.err('✖')} cleanup incomplete\n`)
+        process.stderr.write(`${themeStderr.err(symbols.fail)} cleanup incomplete\n`)
         for (const failure of error.failures) {
           process.stderr.write(`  ${failure.step}: ${failure.error}\n`)
         }
@@ -1008,12 +1009,12 @@ async function runReapCommand(sessionId: string, force: boolean): Promise<void> 
   try {
     const result = await reapSession(sessionId, { cleaner: createCleaner(), force })
     if (result.status === 'failed') {
-      process.stderr.write(`${theme.err('✖')} reaper could not clean ${sessionId}: ${result.reasons.join('; ')}\n`)
+      process.stderr.write(`${theme.err(symbols.fail)} reaper could not clean ${sessionId}: ${result.reasons.join('; ')}\n`)
       process.exitCode = 8
     }
   }
   catch (error) {
-    process.stderr.write(`${theme.err('✖')} reaper failed for ${sessionId}: ${errorMessage(error)}\n`)
+    process.stderr.write(`${theme.err(symbols.fail)} reaper failed for ${sessionId}: ${errorMessage(error)}\n`)
     process.exitCode = 8
   }
 }

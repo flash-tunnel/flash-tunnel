@@ -4,6 +4,7 @@ import type { Reporter } from './reporter'
 import process from 'node:process'
 import { formatDuration } from '@flash-tunnel/utils'
 import yoctoSpinner from 'yocto-spinner'
+import { symbols } from './symbols'
 import { theme } from './theme'
 
 const LABELS: Record<string, string> = {
@@ -89,7 +90,7 @@ export class StepUi {
       return
     }
 
-    const symbol = ok ? theme.ok('✔') : theme.err('✖')
+    const symbol = ok ? theme.ok(symbols.ok) : theme.err(symbols.fail)
     this.reporter.log(`${symbol} ${text}  ${suffix}\n`)
   }
 }

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import process from 'node:process'
+import { symbols } from './symbols'
 import { themeStderr } from './theme'
 
 export interface ReporterOptions {
@@ -55,7 +56,7 @@ export class Reporter {
   }
 
   warn(message: string): void {
-    process.stderr.write(`${themeStderr.warn('!')} ${message}\n`)
+    process.stderr.write(`${themeStderr.warn(symbols.warn)} ${message}\n`)
   }
 
   event(value: Record<string, unknown>): void {
@@ -96,7 +97,7 @@ export class Reporter {
     }
 
     const codeSuffix = effectiveCode ? ` ${themeStderr.dim(`[${effectiveCode}]`)}` : ''
-    process.stderr.write(`${themeStderr.err('✖')} ${message}${codeSuffix}\n`)
+    process.stderr.write(`${themeStderr.err(symbols.fail)} ${message}${codeSuffix}\n`)
     if (hint) {
       process.stderr.write(`  ${themeStderr.dim('hint')} ${hint}\n`)
     }
@@ -128,7 +129,7 @@ export class Reporter {
     })
 
     child.once('error', (error) => {
-      process.stderr.write(`${themeStderr.warn('!')} --on-ready failed: ${error.message}\n`)
+      process.stderr.write(`${themeStderr.warn(symbols.warn)} --on-ready failed: ${error.message}\n`)
     })
     child.unref()
   }

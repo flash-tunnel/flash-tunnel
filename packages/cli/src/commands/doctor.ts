@@ -14,6 +14,7 @@ import {
   loadFlashTunnelConfig
 } from '@flash-tunnel/core'
 import { AdapterError } from '@flash-tunnel/types'
+import { symbols } from '../ui/symbols'
 import { theme } from '../ui/theme'
 
 export type CheckLevel = 'error' | 'info' | 'ok' | 'warn'
@@ -318,12 +319,12 @@ export async function runDoctor(options: DoctorOptions, reporter: Reporter): Pro
 
   for (const check of checks) {
     const symbol = check.level === 'ok'
-      ? theme.ok('✔')
+      ? theme.ok(symbols.ok)
       : check.level === 'warn'
-        ? theme.warn('!')
+        ? theme.warn(symbols.warn)
         : check.level === 'error'
-          ? theme.err('✖')
-          : theme.info('ℹ')
+          ? theme.err(symbols.fail)
+          : theme.info(symbols.info)
     reporter.human(`${symbol} ${check.message}\n`)
     if (check.hint) {
       reporter.human(`  ${theme.dim(check.hint)}\n`)

@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { symbols } from '../ui/symbols'
 import { theme } from '../ui/theme'
 
 const CONFIG_TEMPLATE = `import { defineConfig } from 'flash-tunnel'
@@ -55,7 +56,7 @@ export async function runInit(options: InitOptions, reporter: Reporter): Promise
     return
   }
 
-  reporter.human(`${theme.ok('✔')} config    ${configFile}\n`)
-  reporter.human(`${gitignoreUpdated ? theme.ok('✔') : theme.dim('·')} gitignore ${gitignoreFile}${gitignoreUpdated ? '' : ' (already up to date)'}\n`)
+  reporter.human(`${theme.ok(symbols.ok)} config    ${configFile}\n`)
+  reporter.human(`${gitignoreUpdated ? theme.ok(symbols.ok) : theme.dim(symbols.bullet)} gitignore ${gitignoreFile}${gitignoreUpdated ? '' : ' (already up to date)'}\n`)
   reporter.human(`\n${theme.dim('Next: edit flash-tunnel.ts, then run npx flash-tunnel')}\n`)
 }
