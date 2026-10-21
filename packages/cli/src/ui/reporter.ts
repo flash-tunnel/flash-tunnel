@@ -1,3 +1,4 @@
+import type { Buffer } from 'node:buffer'
 import type { ReadyPayload } from './types'
 import { spawn } from 'node:child_process'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
@@ -118,7 +119,8 @@ export class Reporter {
     const child = spawn(this.onReady as string, {
       cwd: this.cwd,
       shell: true,
-      stdio: 'inherit',
+      // Keep stdout machine-readable in --json mode.
+      stdio: this.json ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       windowsHide: true,
       env: {
         ...process.env,
@@ -130,6 +132,11 @@ export class Reporter {
         ...(payload.expiresAt ? { FLASH_TUNNEL_EXPIRES_AT: payload.expiresAt } : {})
       }
     })
+
+    if (this.json) {
+      child.stdout?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
+      child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
+    }
 
     child.once('error', (error) => {
       process.stderr.write(`${themeStderr.warn(symbols.warn)} --on-ready failed: ${error.message}\n`)
