@@ -1,0 +1,47 @@
+{
+  "name": "flash-tunnel-monorepo",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.12.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flash-tunnel/flash-tunnel.git"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "stub": "pnpm -r run stub",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "tu": "vitest -u",
+    "lint": "eslint --cache",
+    "lint:fix": "eslint --cache --fix",
+    "ft": "node ./packages/flash-tunnel/bin/flash-tunnel.mjs",
+    "release": "bumpp -r",
+    "prepare": "simple-git-hooks"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.5.1",
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "^5.0.3",
+    "bumpp": "^12.3.0",
+    "defu": "^6.1.7",
+    "eslint": "^10.12.0",
+    "nano-staged": "^1.0.2",
+    "simple-git-hooks": "^2.14.0",
+    "typescript": "^6.0.3",
+    "unbuild": "^3.6.1",
+    "vitest": "^5.0.3"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm nano-staged"
+  },
+  "nano-staged": {
+    "*.{ts,js,mjs,cjs,json,jsonc,md,yml,yaml}": "eslint --cache --fix"
+  }
+}
