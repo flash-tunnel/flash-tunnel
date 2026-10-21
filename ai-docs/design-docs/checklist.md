@@ -56,7 +56,7 @@
 - [x] 框架端口表与脚本参数端口解析
 - [x] stdout 解析（ANSI 剥离、`Local:` 优先、IPv6）
 - [x] 就绪探测（TCP + HTTP，任意状态码，超时 `server.timeout`）
-- [ ] 端口冲突处理（TTY 询问 / 非 TTY 失败 / `--reuse`）
+- [x] 端口冲突处理（TTY 询问 / 非 TTY 失败 / `--reuse`）
 - [x] monorepo 子包候选与 `server.cwd`
 - [x] 静态模式（MIME、SPA 回退、路径穿越防护、默认 4173）
 - [x] 进程组启动与跨平台停止（SIGTERM → SIGKILL / `taskkill /T /F`）
@@ -73,16 +73,16 @@
 - [x] 冲突处理：本工具标记自动回收，非本工具需 `--overwrite`
 - [x] cloudflared 启动（`TUNNEL_TOKEN` 环境变量、`--no-autoupdate`、日志捕获）
 - [x] `waitReady`：API healthy + connections > 0（超时 30s）
-- [ ] 公网验证：HTTPS 探测接受 2xx–4xx、超时 60s、DoH 诊断
+- [x] 公网验证：HTTPS 探测接受 2xx–4xx、超时 60s、DoH 诊断
 - [x] 停止：SIGTERM → 5s → kill tree
 - [x] 删除：DNS → 连接清理 → 隧道；404 幂等
 - [x] quick 模式（URL 解析、无 DNS、进程清理）
-- [ ] 错误码映射表与用户提示
-- [ ] cloudflared 版本检查与安装提示
+- [x] 错误码映射表与用户提示
+- [x] cloudflared 版本检查与安装提示
 
 ## 编排与状态（02/08）
 
-- [ ] 状态机与非法转换保护
+- [x] 状态机与非法转换保护
 - [ ] 资源账本（kind/provider/ref/origin/owned/dispose）
 - [x] 逆序回滚、单步失败不阻断、超时预算
 - [x] 会话 id、项目锁、心跳（15s）
@@ -119,12 +119,12 @@
 - [x] 符号与颜色双通道表意；Unicode 降级（Windows conhost）
 - [x] `yocto-spinner` 步骤行（`handleSignals: false`、非 TTY 不启动、verbose 关闭）
 - [x] step runner：成功/失败/耗时/phase 分组；失败先停 spinner
-- [ ] `@inquirer/prompts`（Zone/端口冲突/monorepo/quick 降级/记录冲突）
+- [x] `@inquirer/prompts`（Zone/端口冲突/monorepo/quick 降级/记录冲突）
 - [x] `ExitPromptError` → 清理 + 退出码 130，无堆栈
 - [x] 非 TTY/CI：逐行输出、无 ANSI、无交互
 - [x] `--json`（stdout 仅 NDJSON、stderr 人类日志、错误事件）
 - [x] `--ready-file` / `--on-ready` / `--silent` / `--no-open` / `--no-spinner` / `--no-color`
-- [ ] 快捷键（c/o/q，可关闭；退出恢复 raw mode 与光标）
+- [x] 快捷键（c/o/q，可关闭；退出恢复 raw mode 与光标）
 - [x] 退出码 0/1/2/3/4/5/6/7/8/130/143
 - [x] `doctor` 检查项与 `--json`
 - [x] `init` 生成配置 + `.gitignore`
@@ -133,7 +133,7 @@
 ## 安全（09）
 
 - [x] Token 只从环境变量读取，不落盘、不进配置文件字段
-- [ ] 日志脱敏（Bearer/JWT/token=）
+- [x] 日志脱敏（Bearer/JWT/token=）
 - [x] cloudflared token 走 env，不进 argv
 - [x] 随机子域默认；固定名/多级子域/`--overwrite`/`--keep` 警告
 - [x] 删除只按 id + comment 校验
@@ -147,7 +147,7 @@
 - [x] 新配置面外没有遗留字段（编译期即可发现）
 - [x] 探测 fixture 单测（含 monorepo、锁文件、输出解析、preview 降级）
 - [ ] 账本/回滚/超时/幂等单测
-- [ ] 状态文件原子写与损坏恢复
+- [x] 状态文件原子写与损坏恢复
 - [x] Cloudflare 适配器 MockAgent 用例（鉴权、冲突、token 兜底、429、404、连接清理）
 - [x] 适配器一致性套件（若交付 `@flash-tunnel/testing`）
 - [ ] UI 单测：`NO_COLOR`/`FORCE_COLOR` 下的输出、非 TTY 无动画、`--json` 纯净 stdout

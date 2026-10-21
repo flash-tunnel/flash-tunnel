@@ -20,6 +20,8 @@ import {
   detectServer,
   detectWorkspaceCandidates,
   Emitter,
+  errorExitCode,
+  errorHint,
   findStaleSessions,
   FlashTunnelError,
   isProcessAlive,
@@ -27,7 +29,6 @@ import {
   loadDnsAdapter,
   loadFlashTunnelConfig,
   loadTunnelAdapter,
-  ProjectLockedError,
   reapSession,
   resolveConfig,
   sameProject,
@@ -1064,40 +1065,20 @@ async function cleanSessionsFor(options: CleanOptions): Promise<CleanSessionResu
 }
 
 function exitCodeFor(error: unknown): number {
-  if (error instanceof FlashTunnelError) {
-    return error.exitCode
-  }
   if (error instanceof CleanupError) {
     return 8
-  }
-  if (error instanceof AdapterError) {
-    if (/^(?:AUTH|TOKEN|PERMISSION|ACCOUNT)/.test(error.code)) {
-      return 4
-    }
-    if (/^(?:DNS|ZONE|RECORD)/.test(error.code)) {
-      return 6
-    }
-    if (error.code.startsWith('TUNNEL')) {
-      return 5
-    }
-    if (/^(?:PUBLIC|VERIFY)/.test(error.code)) {
-      return 7
-    }
-  }
-  if (error instanceof ProjectLockedError) {
-    return 2
   }
   if (error instanceof TypeError && /config|flash-tunnel\.ts/i.test(error.message)) {
     return 2
   }
-  return 1
+  return errorExitCode(error)
 }
 
 function reportError(error: unknown, reporter: Reporter): void {
   const code = error instanceof FlashTunnelError || error instanceof AdapterError
     ? error.code
     : undefined
-  const hint = error instanceof FlashTunnelError ? error.hint : undefined
+  const hint = errorHint(error)
 
   reporter.error(error, code, hint)
 
