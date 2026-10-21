@@ -1,4 +1,5 @@
 import type { TunnelMode } from '@flash-tunnel/types'
+import { existsSync } from 'node:fs'
 import { appendFile, chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -138,9 +139,12 @@ export function isSessionStale(state: SessionState, now: number = Date.now()): b
 }
 
 export async function writeSessionState(state: SessionState): Promise<void> {
-  await ensurePrivateDirectory(projectStateDirectory(state.projectRoot))
+  // Do not recreate a project directory that has been removed since the session started.
+  if (existsSync(state.projectRoot)) {
+    await ensurePrivateDirectory(projectStateDirectory(state.projectRoot))
+    await writeJson(sessionFile(state.projectRoot), state)
+  }
   await ensurePrivateDirectory(globalSessionsDirectory())
-  await writeJson(sessionFile(state.projectRoot), state)
   await writeJson(globalSessionFile(state.sessionId), state)
 }
 

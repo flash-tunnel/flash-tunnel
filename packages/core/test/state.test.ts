@@ -1,5 +1,5 @@
 import type { SessionState } from '../src'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -65,6 +65,15 @@ describe('session state store', () => {
     await removeSessionState(state)
     expect(await readSessionState(project)).toBeUndefined()
     expect(await listSessionStates()).toHaveLength(0)
+  })
+
+  it('does not recreate a project directory that no longer exists', async () => {
+    const missing = join(home, 'missing-project')
+    await writeSessionState(createState({ projectRoot: missing }))
+
+    await expect(access(missing)).rejects.toThrow()
+    expect(await readSessionState(missing)).toBeUndefined()
+    expect(await listSessionStates()).toHaveLength(1)
   })
 
   it('treats dead pids and old heartbeats as stale', () => {
