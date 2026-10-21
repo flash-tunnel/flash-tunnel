@@ -177,6 +177,7 @@ async function startCommandServer(plan: ServerPlan, options: StartServerOptions)
     plan,
     url: `http://127.0.0.1:${plan.port}`,
     port: plan.port,
+    pid: child.pid,
     startedByUs: true,
     output,
     exited,

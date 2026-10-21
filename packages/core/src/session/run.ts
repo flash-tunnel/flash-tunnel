@@ -4,15 +4,19 @@ import type {
   AdapterLogger,
   DnsAdapter,
   DnsRecordRef,
+  FlashTunnelEvents,
   TunnelAdapter,
   TunnelHandle,
   TunnelMode
 } from '@flash-tunnel/types'
 import type { ServerHandle } from '../server/types'
-import type { SessionState } from '../state/store'
+import type { SessionPhase, SessionState } from '../state/store'
 import { basename } from 'node:path'
 import process from 'node:process'
-import { randomId, slugify } from '@flash-tunnel/utils'
+import { AdapterError } from '@flash-tunnel/types'
+import { randomId, sleep, slugify } from '@flash-tunnel/utils'
+import { FlashTunnelError } from '../errors'
+import { Emitter } from '../events'
 import { detectServer } from '../server/detect'
 import { startServer } from '../server/run'
 import {
@@ -23,6 +27,16 @@ import {
 } from '../state/store'
 import { verifyPublicUrl } from '../tunnel/verify'
 import { createSessionId } from './id'
+
+const CLEANUP_TIMEOUTS = {
+  tunnelStop: 8_000,
+  tunnelDrain: 10_000,
+  dnsRemove: 10_000,
+  tunnelDeprovision: 10_000,
+  serverStop: 8_000
+} as const
+
+const CLEANUP_BUDGET_MS = 30_000
 
 export interface PreviewAdapters {
   tunnel: TunnelAdapter
@@ -43,6 +57,8 @@ export interface StartPreviewSessionOptions {
   keep?: boolean
   autoStopAfterMs?: number
   configSource?: string
+  /** Test hook: shrink the total cleanup budget. */
+  cleanupBudgetMs?: number
 }
 
 export interface PreviewSession {
@@ -55,6 +71,9 @@ export interface PreviewSession {
   dns?: DnsRecordRef
   exited: Promise<void>
   autoStopped?: Promise<void>
+  events: Emitter<FlashTunnelEvents>
+  /** True as soon as intentional teardown starts. */
+  readonly stopping: boolean
   stop: () => Promise<void>
 }
 
@@ -90,13 +109,55 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function withTimeout<T>(work: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    timer.unref()
+  })
+
+  // Observe the losing promise so a late rejection never becomes unhandled.
+  work.catch(() => {})
+
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  })
+}
+
+async function retry<T>(operation: () => Promise<T>, attempts: number): Promise<T> {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    try {
+      return await operation()
+    }
+    catch (error) {
+      lastError = error
+      if (!(error instanceof AdapterError) || !error.retriable) {
+        throw error
+      }
+    }
+  }
+
+  throw lastError
+}
+
 export async function startPreviewSession(options: StartPreviewSessionOptions): Promise<PreviewSession> {
   const { cwd, config, adapters } = options
   const mode: TunnelMode = options.mode ?? config.tunnel?.mode ?? 'quick'
   const persist = options.persist ?? true
+  const events = new Emitter<FlashTunnelEvents>()
 
   if (!adapters.tunnel.capabilities.modes.includes(mode)) {
-    throw new Error(`Tunnel adapter "${adapters.tunnel.id}" does not support mode "${mode}"`)
+    throw new FlashTunnelError(`Tunnel adapter "${adapters.tunnel.id}" does not support mode "${mode}"`, {
+      code: 'TUNNEL_MODE_UNSUPPORTED',
+      exitCode: 5
+    })
   }
 
   const sessionId = createSessionId()
@@ -121,13 +182,72 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       cleanup: { required: false, attempts: 0, inProgress: false, kept: false }
     }
     await writeSessionState(state)
+    events.emit('state', { from: 'idle', to: 'starting' })
   }
 
+  const saveState = async (): Promise<void> => {
+    if (state) {
+      await writeSessionState(state).catch(() => {})
+    }
+  }
+
+  const transition = async (to: SessionPhase): Promise<void> => {
+    if (!state) {
+      return
+    }
+
+    const from = state.state
+    state.state = to
+    if (from !== to) {
+      events.emit('state', { from, to })
+    }
+    await saveState()
+  }
+
+  const serverStartedAt = Date.now()
   const plan = detectServer(cwd, config.server)
-  const server = await startServer(plan, {
-    timeoutMs: config.server?.timeout,
-    signal: options.signal,
-    onLog: options.onLog
+  let server: ServerHandle
+  try {
+    server = await startServer(plan, {
+      timeoutMs: config.server?.timeout,
+      signal: options.signal,
+      onLog: options.onLog
+    })
+  }
+  catch (error) {
+    await releaseProjectLock(cwd, sessionId).catch(() => {})
+    if (state) {
+      await removeSessionState(state).catch(() => {})
+    }
+    throw new FlashTunnelError(
+      `Failed to start the local server: ${errorMessage(error)}`,
+      { code: 'SERVER_START_FAILED', exitCode: 3, cause: error }
+    )
+  }
+
+  events.emit('server:detected', {
+    command: plan.command ?? plan.mode,
+    cwd: plan.cwd,
+    confidence: plan.confidence,
+    reason: plan.reason
+  })
+
+  if (state) {
+    state.server = {
+      url: server.url,
+      command: plan.command,
+      cwd: plan.cwd,
+      pid: server.pid,
+      startedByUs: server.startedByUs
+    }
+    await transition('server-ready')
+  }
+
+  events.emit('server:ready', {
+    url: server.url,
+    port: server.port,
+    startedByUs: server.startedByUs,
+    durationMs: Date.now() - serverStartedAt
   })
 
   const ctx: AdapterContext = {
@@ -143,6 +263,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   let dnsRef: DnsRecordRef | undefined
   let tunnelStarted = false
   let stopPromise: Promise<void> | undefined
+  let stopping = false
   let heartbeatTimer: NodeJS.Timeout | undefined
   let autoStopTimer: NodeJS.Timeout | undefined
   let resolveTunnelExit: () => void = () => {}
@@ -151,49 +272,100 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     resolveTunnelExit = resolve
   })
 
-  const cleanup = async (): Promise<CleanupFailure[]> => {
+  const cleanup = async (): Promise<{ failures: CleanupFailure[], removed: string[] }> => {
     const failures: CleanupFailure[] = []
+    const removed: string[] = []
+    const budgetMs = options.cleanupBudgetMs ?? CLEANUP_BUDGET_MS
+    const deadline = Date.now() + budgetMs
+
+    const step = async (
+      kind: string,
+      timeoutMs: number,
+      task: () => Promise<void>,
+      attempts = 1
+    ): Promise<boolean> => {
+      events.emit('cleanup:step', { kind, status: 'start' })
+      const remaining = deadline - Date.now()
+
+      if (remaining <= 0) {
+        const message = 'cleanup time budget exhausted'
+        failures.push({ step: kind, error: message })
+        events.emit('cleanup:step', { kind, status: 'error', detail: message })
+        return false
+      }
+
+      try {
+        await withTimeout(
+          retry(task, attempts),
+          Math.min(timeoutMs, remaining),
+          kind
+        )
+        removed.push(kind)
+        events.emit('cleanup:step', { kind, status: 'ok' })
+        return true
+      }
+      catch (error) {
+        const message = errorMessage(error)
+        failures.push({ step: kind, error: message })
+        events.emit('cleanup:step', { kind, status: 'error', detail: message })
+        return false
+      }
+    }
 
     if (handle) {
+      const current = handle
+
       if (tunnelStarted) {
-        try {
-          await adapters.tunnel.stop(ctx, handle)
-        }
-        catch (error) {
-          failures.push({ step: 'tunnel.stop', error: errorMessage(error) })
-        }
+        await step('tunnel.stop', CLEANUP_TIMEOUTS.tunnelStop, () => adapters.tunnel.stop(ctx, current))
         tunnelStarted = false
       }
 
-      if (!options.keep && dnsRef && adapters.dns) {
+      const statusFn = adapters.tunnel.status
+      if (statusFn) {
+        events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'start' })
         try {
-          await adapters.dns.remove(ctx, dnsRef)
-          dnsRef = undefined
+          const startedAt = Date.now()
+          while (Date.now() - startedAt < CLEANUP_TIMEOUTS.tunnelDrain) {
+            const status = await statusFn(ctx, current)
+            if (status.connections === 0) {
+              break
+            }
+            await sleep(300)
+          }
+          events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'ok' })
         }
         catch (error) {
-          failures.push({ step: 'dns.remove', error: errorMessage(error) })
+          // Draining is best-effort; deprovision retries force-clean connections.
+          events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'skip', detail: errorMessage(error) })
         }
+      }
+      else {
+        events.emit('cleanup:step', { kind: 'tunnel.drain', status: 'skip', detail: 'adapter has no status()' })
+      }
+
+      if (!options.keep && dnsRef && adapters.dns) {
+        const ref = dnsRef
+        if (await step('dns.remove', CLEANUP_TIMEOUTS.dnsRemove, () => adapters.dns!.remove(ctx, ref), 3)) {
+          dnsRef = undefined
+        }
+      }
+      else if (options.keep) {
+        events.emit('cleanup:step', { kind: 'dns.remove', status: 'skip', detail: '--keep' })
       }
 
       if (!options.keep) {
-        try {
-          await adapters.tunnel.deprovision(ctx, handle)
+        if (await step('tunnel.deprovision', CLEANUP_TIMEOUTS.tunnelDeprovision, () => adapters.tunnel.deprovision(ctx, current), 3)) {
           handle = undefined
         }
-        catch (error) {
-          failures.push({ step: 'tunnel.deprovision', error: errorMessage(error) })
-        }
+      }
+      else {
+        events.emit('cleanup:step', { kind: 'tunnel.deprovision', status: 'skip', detail: '--keep' })
       }
     }
 
-    try {
-      await server.stop()
-    }
-    catch (error) {
-      failures.push({ step: 'server.stop', error: errorMessage(error) })
-    }
+    await step('server.stop', CLEANUP_TIMEOUTS.serverStop, () => server.stop())
 
-    return failures
+    return { failures, removed }
   }
 
   const stop = async (): Promise<void> => {
@@ -201,6 +373,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       return stopPromise
     }
 
+    stopping = true
     stopPromise = (async () => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
@@ -214,10 +387,19 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       if (state) {
         state.state = 'tearing-down'
         state.cleanup.inProgress = true
-        await writeSessionState(state).catch(() => {})
+        await saveState()
+        events.emit('state', { from: 'running', to: 'tearing-down' })
       }
 
-      const failures = await cleanup()
+      const { failures, removed } = await cleanup()
+
+      events.emit('cleanup:done', {
+        ok: failures.length === 0,
+        removed: options.keep
+          ? removed.filter(kind => kind !== 'dns.remove' && kind !== 'tunnel.deprovision')
+          : removed,
+        failed: failures.map(failure => ({ kind: failure.step, error: failure.error }))
+      })
 
       if (persist && state) {
         if (failures.length > 0) {
@@ -225,13 +407,13 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
           state.cleanup.attempts += 1
           state.cleanup.inProgress = false
           state.state = 'failed'
-          await writeSessionState(state).catch(() => {})
+          await saveState()
         }
         else if (options.keep) {
           state.cleanup.kept = true
           state.cleanup.inProgress = false
           state.state = 'kept'
-          await writeSessionState(state).catch(() => {})
+          await saveState()
         }
         else {
           await removeSessionState(state).catch(() => {})
@@ -252,6 +434,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   }
 
   try {
+    await transition('provisioning-tunnel')
     await adapters.tunnel.preflight(ctx, { mode })
     handle = await adapters.tunnel.provision(ctx, {
       name: tunnelName,
@@ -260,23 +443,19 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     })
 
     if (state) {
-      state.server = {
-        url: server.url,
-        command: plan.command,
-        cwd: plan.cwd,
-        startedByUs: server.startedByUs
-      }
       state.tunnel = {
         provider: handle.provider,
         tunnelId: handle.tunnelId,
         name: handle.name,
         publicUrl: handle.publicUrl,
         mode,
-        accountId: handle.meta?.accountId
+        accountId: handle.meta?.accountId,
+        configured: true
       }
-      state.state = 'tunnel-provisioned'
-      await writeSessionState(state)
+      await transition('tunnel-provisioned')
     }
+
+    events.emit('tunnel:provisioned', { tunnelId: handle.tunnelId, name: handle.name })
 
     if (handle.dns) {
       if (!adapters.dns) {
@@ -308,9 +487,14 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
           recordId: dnsRef.recordId,
           hostname: dnsRef.name
         }
-        state.state = 'dns-created'
-        await writeSessionState(state)
+        await transition('dns-created')
       }
+
+      events.emit('dns:created', {
+        hostname: dnsRef.name,
+        recordId: dnsRef.recordId,
+        zoneId: dnsRef.zoneId
+      })
     }
 
     await adapters.tunnel.start(ctx, handle, {
@@ -322,31 +506,52 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     })
     tunnelStarted = true
 
+    if (state) {
+      const tunnelPid = Number(handle.meta?.processPid)
+      if (Number.isInteger(tunnelPid) && tunnelPid > 0) {
+        state.processes = [{ kind: 'cloudflared', pid: tunnelPid }]
+        await saveState()
+      }
+    }
+
+    const verifyStartedAt = Date.now()
     const status = await adapters.tunnel.waitReady(ctx, handle, 30_000)
+    events.emit('tunnel:connected', { connections: status.connections })
     const publicUrl = status.publicUrl ?? handle.publicUrl
 
     if (!publicUrl) {
       throw new Error('Tunnel did not provide a public URL')
     }
 
-    await verifyPublicUrl(publicUrl, {
-      timeoutMs: options.verifyTimeoutMs ?? 60_000,
-      signal: options.signal
-    })
+    try {
+      await verifyPublicUrl(publicUrl, {
+        timeoutMs: options.verifyTimeoutMs ?? 60_000,
+        signal: options.signal
+      })
+    }
+    catch (error) {
+      throw new FlashTunnelError(
+        `The public URL did not answer: ${errorMessage(error)}`,
+        { code: 'PUBLIC_VERIFY_FAILED', exitCode: 7, hint: 'Check cloudflared connectivity and try again', cause: error }
+      )
+    }
+    events.emit('public:ready', { url: publicUrl, verifyMs: Date.now() - verifyStartedAt })
 
     if (state) {
-      state.state = 'running'
       if (state.tunnel) {
         state.tunnel.publicUrl = publicUrl
       }
-      await writeSessionState(state)
+      if (options.autoStopAfterMs && options.autoStopAfterMs > 0) {
+        state.expiresAt = new Date(Date.now() + options.autoStopAfterMs).toISOString()
+      }
+      await transition('running')
 
       heartbeatTimer = setInterval(() => {
         if (!state) {
           return
         }
         state.heartbeatAt = new Date().toISOString()
-        void writeSessionState(state).catch(() => {})
+        void saveState()
       }, 15_000)
       heartbeatTimer.unref()
     }
@@ -357,7 +562,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
         resolveAutoStopped = resolve
       })
       autoStopTimer = setTimeout(() => {
-        stop()
+        events.emit('autostop:expired', { expiresAt: Date.parse(state?.expiresAt ?? '') || Date.now() })
+        void stop()
           .catch(() => {})
           .finally(() => resolveAutoStopped())
       }, options.autoStopAfterMs)
@@ -374,6 +580,10 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       dns: dnsRef,
       exited: tunnelExited,
       autoStopped,
+      events,
+      get stopping(): boolean {
+        return stopping
+      },
       stop
     }
   }
@@ -385,12 +595,21 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       clearTimeout(autoStopTimer)
     }
 
-    const failures = await cleanup()
+    stopping = true
+    const { failures } = await cleanup()
+
+    events.emit('cleanup:done', {
+      ok: failures.length === 0,
+      removed: [],
+      failed: failures.map(failure => ({ kind: failure.step, error: failure.error }))
+    })
+
     if (persist && state) {
       if (failures.length > 0) {
         state.cleanup.required = true
+        state.cleanup.attempts += 1
         state.state = 'failed'
-        await writeSessionState(state).catch(() => {})
+        await saveState()
       }
       else {
         await removeSessionState(state).catch(() => {})

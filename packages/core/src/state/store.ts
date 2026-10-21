@@ -1,8 +1,25 @@
 import type { TunnelMode } from '@flash-tunnel/types'
-import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import process from 'node:process'
+import { isProcessAlive } from '../process'
+
+export type SessionPhase
+  = | 'starting'
+    | 'server-ready'
+    | 'provisioning-tunnel'
+    | 'tunnel-provisioned'
+    | 'dns-created'
+    | 'running'
+    | 'tearing-down'
+    | 'kept'
+    | 'failed'
+
+export interface SessionProcessState {
+  kind: 'cloudflared' | 'server'
+  pid: number
+}
 
 export interface SessionServerState {
   url?: string
@@ -19,6 +36,7 @@ export interface SessionTunnelState {
   publicUrl?: string
   mode: TunnelMode
   accountId?: string
+  configured?: boolean
 }
 
 export interface SessionDnsState {
@@ -35,11 +53,13 @@ export interface SessionState {
   projectRoot: string
   startedAt: string
   heartbeatAt: string
-  state: string
+  state: SessionPhase
   configSource?: string
   server: SessionServerState
+  processes?: SessionProcessState[]
   tunnel?: SessionTunnelState
   dns?: SessionDnsState
+  expiresAt?: string
   cleanup: {
     required: boolean
     attempts: number
@@ -94,13 +114,18 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await chmod(path, 0o600).catch(() => {})
 }
 
-export function isProcessAlive(pid: number): boolean {
+export function reapLogFile(sessionId: string): string {
+  return join(homeDirectory(), 'logs', `reap-${sessionId}.log`)
+}
+
+export async function appendReapLog(sessionId: string, message: string): Promise<void> {
+  const file = reapLogFile(sessionId)
   try {
-    process.kill(pid, 0)
-    return true
+    await ensurePrivateDirectory(dirname(file))
+    await appendFile(file, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 })
   }
-  catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  catch {
+    // Logging must never break cleanup.
   }
 }
 

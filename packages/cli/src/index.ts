@@ -1,15 +1,21 @@
-import type { PreviewSession, SessionCleaner, SessionState } from '@flash-tunnel/core'
+import type { CleanSessionResult, PreviewSession, SessionCleaner, SessionState } from '@flash-tunnel/core'
 import type { TunnelMode } from '@flash-tunnel/types'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { CloudflareApi, createCloudflareDns, createCloudflareTunnel } from '@flash-tunnel/adapter-cloudflare'
 import {
+  cleanSession,
   cleanSessions,
   CleanupError,
+  findStaleSessions,
+  FlashTunnelError,
   isProcessAlive,
   listSessionStates,
   loadFlashTunnelConfig,
+  ProjectLockedError,
+  reapSession,
   resolveHostname,
   startPreviewSession
 } from '@flash-tunnel/core'
@@ -24,9 +30,13 @@ interface StartOptions {
   command?: string
   url?: string
   mode?: string
+  zone?: string
+  hostname?: string
   verbose?: boolean
   keep?: boolean
   autoStop?: string
+  noSweep?: boolean
+  sweep?: boolean
 }
 
 interface CleanOptions {
@@ -37,6 +47,16 @@ interface CleanOptions {
   dryRun?: boolean
   yes?: boolean
   force?: boolean
+}
+
+type SignalReason = 'SIGINT' | 'SIGHUP' | 'SIGTERM'
+type StopReason = SignalReason | 'auto-stop' | 'server-exit' | 'tunnel-exit'
+
+let pendingReapSessionId: string | undefined
+let exitReaperInstalled = false
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function readVersion(): string {
@@ -51,25 +71,85 @@ function readVersion(): string {
   }
 }
 
-type StopReason = 'SIGINT' | 'SIGTERM' | 'auto-stop' | 'server-exit' | 'tunnel-exit'
-
 function waitForStop(session: PreviewSession): Promise<StopReason> {
   return new Promise((resolveStop) => {
-    let finish: (reason: StopReason) => void = (): void => {}
+    let finished = false
 
-    const onSignal = (signal: 'SIGINT' | 'SIGTERM'): void => finish(signal)
-
-    finish = (reason: StopReason): void => {
-      process.off('SIGINT', onSignal)
-      process.off('SIGTERM', onSignal)
+    function finish(reason: StopReason): void {
+      if (finished) {
+        return
+      }
+      finished = true
+      process.off('SIGINT', onSigint)
+      process.off('SIGTERM', onSigterm)
+      process.off('SIGHUP', onSighup)
       resolveStop(reason)
     }
 
-    process.once('SIGINT', onSignal)
-    process.once('SIGTERM', onSignal)
-    session.exited.then(() => finish('tunnel-exit'))
+    function onSigint(): void {
+      finish('SIGINT')
+    }
+
+    function onSigterm(): void {
+      finish('SIGTERM')
+    }
+
+    function onSighup(): void {
+      finish('SIGHUP')
+    }
+
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+    process.once('SIGHUP', onSighup)
+
+    session.exited.then(() => {
+      if (!session.stopping) {
+        finish('tunnel-exit')
+      }
+    })
     session.autoStopped?.then(() => finish('auto-stop'))
-    session.server.exited?.then(() => finish('server-exit'))
+    session.server.exited?.then(() => {
+      if (!session.stopping) {
+        finish('server-exit')
+      }
+    })
+  })
+}
+
+/** The second Ctrl+C during cleanup exits immediately; the state file is reaped on next start. */
+function installInterruptEscalation(): () => void {
+  const onSignal = (signal: NodeJS.Signals): void => {
+    process.stderr.write(`\n${theme.warn('!')} forced exit (${signal}); leftover resources will be cleaned by the next run\n`)
+    process.exit(signal === 'SIGINT' ? 130 : 143)
+  }
+
+  process.once('SIGINT', onSignal)
+  process.once('SIGTERM', onSignal)
+
+  return () => {
+    process.off('SIGINT', onSignal)
+    process.off('SIGTERM', onSignal)
+  }
+}
+
+function installExitReaper(): void {
+  if (exitReaperInstalled) {
+    return
+  }
+  exitReaperInstalled = true
+
+  process.on('exit', () => {
+    const sessionId = pendingReapSessionId
+    const entry = process.argv[1]
+    if (!sessionId || !entry) {
+      return
+    }
+
+    spawnSync(process.execPath, [entry, '__reap', '--session', sessionId, '--force'], {
+      stdio: 'ignore',
+      timeout: 20_000,
+      windowsHide: true
+    })
   })
 }
 
@@ -80,7 +160,11 @@ function parseMode(value: string | undefined): TunnelMode {
   if (value === 'quick' || value === 'named') {
     return value
   }
-  throw new Error(`Invalid tunnel mode "${value}". Use "quick" or "named".`)
+  throw new FlashTunnelError(`Invalid tunnel mode "${value}"`, {
+    code: 'INVALID_MODE',
+    exitCode: 2,
+    hint: 'Use "quick" for a temporary trycloudflare.com domain or "named" for a custom domain'
+  })
 }
 
 function createCleaner(): SessionCleaner | undefined {
@@ -132,35 +216,64 @@ function createCleaner(): SessionCleaner | undefined {
 }
 
 async function sweepStale(projectRoot: string): Promise<void> {
-  const cleaner = createCleaner()
-  if (!cleaner) {
+  const { project, others } = await findStaleSessions(projectRoot)
+
+  for (const state of others) {
+    process.stderr.write(
+      `${theme.warn('!')} leftover session ${state.sessionId} in ${state.projectRoot}; run flash-tunnel clean --stale\n`
+    )
+  }
+
+  if (project.length === 0) {
     return
   }
 
-  const results = await cleanSessions({
-    projectRoot,
-    staleOnly: true,
-    cleaner
-  })
+  const cleaner = createCleaner()
 
-  for (const result of results) {
+  for (const state of project) {
+    if (!cleaner && (state.dns || state.tunnel?.mode === 'named')) {
+      process.stderr.write(
+        `${theme.warn('!')} leftover session ${state.sessionId} needs CLOUDFLARE_API_TOKEN; run flash-tunnel clean --session ${state.sessionId}\n`
+      )
+      continue
+    }
+
+    const result = await cleanSession(state, { cleaner })
     if (result.status === 'removed') {
-      process.stdout.write(`${theme.dim('swept')} ${result.sessionId}\n`)
+      process.stdout.write(`${theme.dim('swept')} ${state.sessionId}\n`)
+    }
+    else if (result.status === 'failed') {
+      process.stderr.write(`${theme.warn('!')} sweep ${state.sessionId}: ${result.reasons.join('; ')}\n`)
     }
   }
 }
 
 async function startPreview(options: StartOptions): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
-  const { config, source } = await loadFlashTunnelConfig(cwd)
+
+  let loaded: Awaited<ReturnType<typeof loadFlashTunnelConfig>>
+  try {
+    loaded = await loadFlashTunnelConfig(cwd)
+  }
+  catch (error) {
+    throw new FlashTunnelError(`Failed to load flash-tunnel.ts: ${errorMessage(error)}`, {
+      code: 'CONFIG_LOAD_FAILED',
+      exitCode: 2,
+      cause: error
+    })
+  }
+
+  const { config, source } = loaded
 
   if (source) {
     process.stdout.write(`${theme.dim('config')} ${source}\n`)
   }
 
-  await sweepStale(cwd).catch((error) => {
-    process.stderr.write(`${theme.warn('!')} sweep failed: ${error instanceof Error ? error.message : String(error)}\n`)
-  })
+  if (!options.noSweep && options.sweep !== false) {
+    await sweepStale(cwd).catch((error) => {
+      process.stderr.write(`${theme.warn('!')} sweep failed: ${errorMessage(error)}\n`)
+    })
+  }
 
   const provider = config.providers?.cloudflare as
     | {
@@ -171,13 +284,17 @@ async function startPreview(options: StartOptions): Promise<void> {
     }
     | undefined
 
-  const mode = parseMode(options.mode)
+  const mode = parseMode(options.mode ?? config.tunnel?.mode)
   const apiToken = process.env.CLOUDFLARE_API_TOKEN
   const apiBase = process.env.FLASH_TUNNEL_CLOUDFLARE_API_BASE
-  let zone = process.env.FLASH_TUNNEL_ZONE ?? config.domain?.zone
+  let zone = options.zone ?? process.env.FLASH_TUNNEL_ZONE ?? config.domain?.zone
 
   if (mode === 'named' && !apiToken) {
-    throw new Error('Named mode requires CLOUDFLARE_API_TOKEN; use --mode quick for a temporary domain')
+    throw new FlashTunnelError('Named mode requires CLOUDFLARE_API_TOKEN', {
+      code: 'AUTH_MISSING',
+      exitCode: 4,
+      hint: 'Export CLOUDFLARE_API_TOKEN, or use --mode quick for a temporary domain'
+    })
   }
 
   if (mode === 'named' && !zone && apiToken) {
@@ -188,19 +305,32 @@ async function startPreview(options: StartOptions): Promise<void> {
       zone = zones[0].name
     }
     else if (zones.length === 0) {
-      throw new Error('No active Cloudflare zone found; set domain.zone in flash-tunnel.ts')
+      throw new FlashTunnelError('No active Cloudflare zone found', {
+        code: 'ZONE_NOT_FOUND',
+        exitCode: 2,
+        hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
+      })
     }
     else {
-      throw new Error(`Multiple zones found (${zones.map(item => item.name).join(', ')}); set domain.zone`)
+      throw new FlashTunnelError(`Multiple zones found (${zones.map(item => item.name).join(', ')})`, {
+        code: 'ZONE_AMBIGUOUS',
+        exitCode: 2,
+        hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
+      })
     }
   }
 
   if (mode === 'named' && !zone) {
-    throw new Error('Named mode requires domain.zone in flash-tunnel.ts or FLASH_TUNNEL_ZONE')
+    throw new FlashTunnelError('Named mode requires a zone', {
+      code: 'ZONE_REQUIRED',
+      exitCode: 2,
+      hint: 'Set domain.zone in flash-tunnel.ts or pass --zone'
+    })
   }
 
   const hostname = mode === 'named' && zone
-    ? process.env.FLASH_TUNNEL_HOSTNAME
+    ? options.hostname
+    ?? process.env.FLASH_TUNNEL_HOSTNAME
     ?? resolveHostname({
       cwd,
       zone,
@@ -225,22 +355,66 @@ async function startPreview(options: StartOptions): Promise<void> {
     : undefined
 
   const autoStopValue = options.autoStop ?? config.autoStopAfter
-  const autoStopAfterMs = autoStopValue === undefined ? undefined : parseDuration(autoStopValue)
+  let autoStopAfterMs: number | undefined
+  try {
+    autoStopAfterMs = autoStopValue === undefined ? undefined : parseDuration(autoStopValue)
+  }
+  catch (error) {
+    throw new FlashTunnelError(`Invalid auto-stop duration: ${errorMessage(error)}`, {
+      code: 'INVALID_DURATION',
+      exitCode: 2,
+      hint: 'Use a value like 30m, 2h or 90s'
+    })
+  }
 
-  const session = await startPreviewSession({
-    cwd,
-    config,
-    adapters: { tunnel, dns },
-    mode,
-    hostname,
-    zone,
-    keep: options.keep,
-    autoStopAfterMs,
-    configSource: source,
-    onLog: options.verbose
-      ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
-      : undefined
-  })
+  const controller = new AbortController()
+  let interrupted: SignalReason | undefined
+  const onEarlySignal = (signal: NodeJS.Signals): void => {
+    if (signal !== 'SIGINT' && signal !== 'SIGTERM' && signal !== 'SIGHUP') {
+      return
+    }
+    interrupted = signal
+    controller.abort(new Error(`Interrupted by ${signal}`))
+  }
+  process.once('SIGINT', onEarlySignal)
+  process.once('SIGTERM', onEarlySignal)
+  process.once('SIGHUP', onEarlySignal)
+
+  let session: PreviewSession
+  try {
+    session = await startPreviewSession({
+      cwd,
+      config,
+      adapters: { tunnel, dns },
+      mode,
+      hostname,
+      zone,
+      keep: options.keep,
+      autoStopAfterMs,
+      configSource: source,
+      signal: controller.signal,
+      onLog: options.verbose
+        ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
+        : undefined
+    })
+  }
+  catch (error) {
+    process.off('SIGINT', onEarlySignal)
+    process.off('SIGTERM', onEarlySignal)
+    process.off('SIGHUP', onEarlySignal)
+
+    if (interrupted) {
+      process.exitCode = interrupted === 'SIGINT' ? 130 : 143
+      return
+    }
+    throw error
+  }
+
+  process.off('SIGINT', onEarlySignal)
+  process.off('SIGTERM', onEarlySignal)
+  process.off('SIGHUP', onEarlySignal)
+
+  pendingReapSessionId = session.sessionId
 
   process.stdout.write(`${theme.ok('✔')} local  ${theme.url(session.localUrl)}\n`)
   if (session.dns && session.hostname) {
@@ -250,7 +424,7 @@ async function startPreview(options: StartOptions): Promise<void> {
   process.stdout.write(`${theme.dim('Press Ctrl+C to stop.')}\n`)
 
   if (options.keep) {
-    process.stderr.write(`${theme.warn('!')} --keep: resources will stay until you run flash-tunnel clean\n`)
+    process.stderr.write(`${theme.warn('!')} --keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}\n`)
   }
 
   const reason = await waitForStop(session)
@@ -263,12 +437,21 @@ async function startPreview(options: StartOptions): Promise<void> {
     process.stderr.write(`${theme.err('✖')} dev server exited unexpectedly\n`)
     process.exitCode = 3
   }
+  else if (reason === 'SIGINT') {
+    process.exitCode = 130
+  }
+  else if (reason === 'SIGTERM' || reason === 'SIGHUP') {
+    process.exitCode = 143
+  }
   else {
     process.stdout.write(`${theme.dim(reason === 'auto-stop' ? 'Auto-stop reached; cleaning up...' : 'Stopping...')}\n`)
   }
 
+  const removeEscalation = installInterruptEscalation()
+  let stoppedCleanly = false
   try {
     await session.stop()
+    stoppedCleanly = true
   }
   catch (error) {
     if (error instanceof CleanupError) {
@@ -280,6 +463,12 @@ async function startPreview(options: StartOptions): Promise<void> {
     }
     else {
       throw error
+    }
+  }
+  finally {
+    removeEscalation()
+    if (stoppedCleanly) {
+      pendingReapSessionId = undefined
     }
   }
 
@@ -309,18 +498,10 @@ async function runClean(options: CleanOptions): Promise<void> {
   }
 
   if (options.all && !options.yes) {
-    throw new Error('clean --all requires --yes')
+    throw new FlashTunnelError('clean --all requires --yes', { code: 'CONFIRM_REQUIRED', exitCode: 2 })
   }
 
-  const results = await cleanSessions({
-    sessionId: options.session,
-    projectRoot: options.project ? resolve(options.project) : undefined,
-    staleOnly: options.stale,
-    all: options.all,
-    force: options.force,
-    dryRun: options.dryRun,
-    cleaner: options.dryRun ? undefined : createCleaner()
-  })
+  const results = await cleanSessionsFor(options)
 
   if (results.length === 0) {
     process.stdout.write(`${theme.dim('No matching sessions.')}\n`)
@@ -354,10 +535,63 @@ async function runClean(options: CleanOptions): Promise<void> {
   }
 }
 
+async function cleanSessionsFor(options: CleanOptions): Promise<CleanSessionResult[]> {
+  return cleanSessions({
+    sessionId: options.session,
+    projectRoot: options.project ? resolve(options.project) : undefined,
+    staleOnly: options.stale,
+    all: options.all,
+    force: options.force,
+    dryRun: options.dryRun,
+    cleaner: options.dryRun ? undefined : createCleaner()
+  })
+}
+
+function exitCodeFor(error: unknown): number {
+  if (error instanceof FlashTunnelError) {
+    return error.exitCode
+  }
+  if (error instanceof CleanupError) {
+    return 8
+  }
+  if (error instanceof AdapterError) {
+    if (/^(?:AUTH|TOKEN|PERMISSION|ACCOUNT)/.test(error.code)) {
+      return 4
+    }
+    if (/^(?:DNS|ZONE|RECORD)/.test(error.code)) {
+      return 6
+    }
+    if (error.code.startsWith('TUNNEL')) {
+      return 5
+    }
+    if (/^(?:PUBLIC|VERIFY)/.test(error.code)) {
+      return 7
+    }
+  }
+  if (error instanceof ProjectLockedError) {
+    return 2
+  }
+  if (error instanceof TypeError && /config|flash-tunnel\.ts/i.test(error.message)) {
+    return 2
+  }
+  return 1
+}
+
 function reportError(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`${theme.err('✖')} ${message}\n`)
-  process.exitCode = error instanceof CleanupError ? 8 : 1
+  const code = error instanceof FlashTunnelError || error instanceof AdapterError
+    ? ` ${theme.dim(`[${error.code}]`)}`
+    : ''
+  process.stderr.write(`${theme.err('✖')} ${errorMessage(error)}${code}\n`)
+
+  if (error instanceof FlashTunnelError && error.hint) {
+    process.stderr.write(`  ${theme.dim('hint')} ${error.hint}\n`)
+  }
+
+  if (process.env.FLASH_TUNNEL_DEBUG === '1' && error instanceof Error && error.stack) {
+    process.stderr.write(`${error.stack}\n`)
+  }
+
+  process.exitCode = exitCodeFor(error)
 }
 
 async function runStart(options: StartOptions = {}): Promise<void> {
@@ -378,7 +612,39 @@ async function runCleanCommand(options: CleanOptions = {}): Promise<void> {
   }
 }
 
+async function runReapCommand(sessionId: string, force: boolean): Promise<void> {
+  try {
+    const result = await reapSession(sessionId, { cleaner: createCleaner(), force })
+    if (result.status === 'failed') {
+      process.stderr.write(`${theme.err('✖')} reaper could not clean ${sessionId}: ${result.reasons.join('; ')}\n`)
+      process.exitCode = 8
+    }
+  }
+  catch (error) {
+    process.stderr.write(`${theme.err('✖')} reaper failed for ${sessionId}: ${errorMessage(error)}\n`)
+    process.exitCode = 8
+  }
+}
+
+function findReapSessionId(argv: string[]): string | undefined {
+  const index = argv.indexOf('--session')
+  return index >= 0 ? argv[index + 1] : undefined
+}
+
 export async function runCli(argv: string[] = process.argv): Promise<void> {
+  installExitReaper()
+
+  if (argv.includes('__reap')) {
+    const sessionId = findReapSessionId(argv)
+    if (!sessionId) {
+      process.stderr.write('__reap requires --session <id>\n')
+      process.exitCode = 2
+      return
+    }
+    await runReapCommand(sessionId, argv.includes('--force'))
+    return
+  }
+
   const cli = cac('flash-tunnel')
 
   cli
@@ -388,8 +654,11 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
+    .option('--zone <domain>', 'Cloudflare zone')
+    .option('--hostname <fqdn>', 'Full public hostname')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
+    .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
     .action((_root: unknown, options: StartOptions = {}) => runStart(options))
 
@@ -400,8 +669,11 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
     .option('--command <command>', 'Command used to start the local server')
     .option('--url <url>', 'Reuse an already running server')
     .option('--mode <mode>', 'Tunnel mode: quick or named')
+    .option('--zone <domain>', 'Cloudflare zone')
+    .option('--hostname <fqdn>', 'Full public hostname')
     .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
     .option('--keep', 'Keep DNS and tunnel after exit')
+    .option('--no-sweep', 'Do not scan for leftover sessions at startup')
     .option('--verbose', 'Stream dev server and cloudflared logs')
     .action((options: StartOptions = {}) => runStart(options))
 

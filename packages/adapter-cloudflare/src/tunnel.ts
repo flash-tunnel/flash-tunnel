@@ -246,6 +246,9 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
       })
 
       childProcess = child
+      if (child.pid) {
+        handle.meta = { ...handle.meta, processPid: String(child.pid) }
+      }
       child.stderr?.on('data', (chunk: Buffer) => capture(chunk, hooks))
       child.stdout?.on('data', (chunk: Buffer) => capture(chunk, hooks))
       child.once('exit', (code, signal) => {

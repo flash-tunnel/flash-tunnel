@@ -31,6 +31,7 @@ export interface ServerHandle {
   plan: ServerPlan
   url: string
   port: number
+  pid?: number
   startedByUs: boolean
   output: string[]
   /** Resolves when a process-backed server exits (static/attach have no exit). */

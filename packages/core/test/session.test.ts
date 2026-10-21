@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
+import { AdapterError } from '@flash-tunnel/types'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readSessionState, startPreviewSession } from '../src'
 
@@ -246,5 +247,144 @@ describe('startPreviewSession', () => {
 
     expect(sequence.indexOf('dns:remove')).toBeGreaterThan(sequence.indexOf('tunnel:stop'))
     expect(sequence.indexOf('tunnel:deprovision')).toBeGreaterThan(sequence.indexOf('dns:remove'))
+  })
+
+  it('retries a retriable dns removal before giving up', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('retry-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+    const sequence: string[] = []
+    const dns = createFakeDns(sequence)
+    let attempts = 0
+    const remove = dns.remove
+    dns.remove = async (ctx, ref) => {
+      attempts += 1
+      if (attempts < 3) {
+        throw new AdapterError('temporary dns failure', { code: 'DNS_REMOVE_FAILED', retriable: true })
+      }
+      await remove(ctx, ref)
+    }
+
+    const session = await startPreviewSession({
+      cwd,
+      config: { server: { command: 'node server.mjs', port: 0 } },
+      adapters: { tunnel: createFakeTunnelWithDns(sequence), dns },
+      mode: 'named',
+      hostname: 'retry.example.com',
+      zone: 'example.com',
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    await session.stop()
+
+    expect(attempts).toBe(3)
+    expect(sequence).toContain('dns:remove')
+    expect(await readSessionState(cwd)).toBeUndefined()
+  })
+
+  it('keeps dns and tunnel when --keep is set', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('keep-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+    const sequence: string[] = []
+
+    const session = await startPreviewSession({
+      cwd,
+      config: { server: { command: 'node server.mjs', port: 0 } },
+      adapters: { tunnel: createFakeTunnelWithDns(sequence), dns: createFakeDns(sequence) },
+      mode: 'named',
+      hostname: 'keep.example.com',
+      zone: 'example.com',
+      keep: true,
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    await session.stop()
+
+    expect(sequence).not.toContain('dns:remove')
+    expect(sequence).not.toContain('tunnel:deprovision')
+
+    const state = await readSessionState(cwd)
+    expect(state?.state).toBe('kept')
+    expect(state?.cleanup.kept).toBe(true)
+    expect(state?.cleanup.inProgress).toBe(false)
+  })
+
+  it('persists expiresAt and emits cleanup events', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('events-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+    const states: string[] = []
+    const cleanup: string[] = []
+
+    const session = await startPreviewSession({
+      cwd,
+      config: { server: { command: 'node server.mjs', port: 0 } },
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick',
+      autoStopAfterMs: 60_000,
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    session.events.on('state', payload => states.push(`${payload.from}->${payload.to}`))
+    session.events.on('cleanup:done', payload => cleanup.push(payload.ok ? 'ok' : 'failed'))
+
+    const state = await readSessionState(cwd)
+    expect(state?.expiresAt).toBeDefined()
+    expect(Date.parse(state?.expiresAt ?? '')).toBeGreaterThan(Date.now())
+
+    await session.stop()
+    await session.stop()
+
+    expect(states).toContain('running->tearing-down')
+    expect(cleanup).toEqual(['ok'])
+  })
+
+  it('auto stops and cleans up after autoStopAfterMs', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => response.end('auto-ok'))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+
+    const session = await startPreviewSession({
+      cwd,
+      config: { server: { command: 'node server.mjs', port: 0 } },
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick',
+      autoStopAfterMs: 1_200,
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    await session.autoStopped
+
+    expect(session.stopping).toBe(true)
+    expect(await readSessionState(cwd)).toBeUndefined()
   })
 })

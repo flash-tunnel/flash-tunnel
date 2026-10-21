@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@flash-tunnel/config": "workspace:*",
+    "@flash-tunnel/types": "workspace:*",
     "@flash-tunnel/utils": "workspace:*",
     "pathe": "^2.0.3",
     "unconfig": "^7.5.0"

@@ -237,6 +237,9 @@ importers:
       '@flash-tunnel/config':
         specifier: workspace:*
         version: link:../config
+      '@flash-tunnel/types':
+        specifier: workspace:*
+        version: link:../types
       '@flash-tunnel/utils':
         specifier: workspace:*
         version: link:../utils
