@@ -7,6 +7,14 @@ export function stripAnsi(input: string): string {
   return stripVTControlCharacters(input)
 }
 
+/** Remove credentials from log lines before they reach a file or terminal. */
+export function redact(input: string): string {
+  return input
+    .replace(/(Bearer\s+)[\w.~+/=-]+/gi, '$1[REDACTED]')
+    .replace(/(TUNNEL_TOKEN\s*=\s*)\S+/gi, '$1[REDACTED]')
+    .replace(/((?:authorization|api[_-]?token|token|secret)["']?\s*[:=]\s*["']?)[\w.~+/=-]{8,}/gi, '$1[REDACTED]')
+}
+
 export function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {

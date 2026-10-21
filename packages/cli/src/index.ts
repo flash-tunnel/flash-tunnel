@@ -35,7 +35,7 @@ import {
   validateAdapterCombination
 } from '@flash-tunnel/core'
 import { AdapterError } from '@flash-tunnel/types'
-import { formatDuration } from '@flash-tunnel/utils'
+import { formatDuration, redact } from '@flash-tunnel/utils'
 import { cac } from 'cac'
 import { isPortAvailable, runBuildScript } from './commands/build'
 import { runDoctor } from './commands/doctor'
@@ -797,7 +797,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       signal: controller.signal,
       events,
       onLog: options.verbose
-        ? line => process.stderr.write(`${theme.dim('[log]')} ${line}\n`)
+        ? line => process.stderr.write(`${theme.dim('[log]')} ${redact(line)}\n`)
         : undefined
     })
   }

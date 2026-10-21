@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDuration, parseDuration, randomId, slugify } from '../src'
+import { formatDuration, parseDuration, randomId, redact, slugify } from '../src'
 
 describe('slugify', () => {
   it('normalizes project names', () => {
@@ -23,6 +23,15 @@ describe('randomId', () => {
 
   it('rejects invalid lengths', () => {
     expect(() => randomId(0)).toThrow(RangeError)
+  })
+})
+
+describe('redact', () => {
+  it('removes bearer tokens and token assignments', () => {
+    expect(redact('Authorization: Bearer abc.def-123')).toContain('Bearer [REDACTED]')
+    expect(redact('TUNNEL_TOKEN=super-secret-value')).toBe('TUNNEL_TOKEN=[REDACTED]')
+    expect(redact('api_token: "abcdefgh12345678"')).toContain('[REDACTED]')
+    expect(redact('plain log line')).toBe('plain log line')
   })
 })
 

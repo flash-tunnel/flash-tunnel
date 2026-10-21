@@ -2,6 +2,7 @@ import type { WriteStream } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { chmod, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { redact } from '@flash-tunnel/utils'
 import { projectStateDirectory } from './state/store'
 
 export type SessionLogKind = 'server' | 'tunnel'
@@ -40,7 +41,7 @@ export async function createSessionLog(
   return {
     path,
     write: (line: string) => {
-      stream.write(`${new Date().toISOString()} ${line}\n`)
+      stream.write(`${new Date().toISOString()} ${redact(line)}\n`)
     },
     close: () => new Promise<void>((resolveClose) => {
       stream.end(() => resolveClose())

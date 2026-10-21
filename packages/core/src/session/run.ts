@@ -39,6 +39,18 @@ const CLEANUP_TIMEOUTS = {
 
 const CLEANUP_BUDGET_MS = 30_000
 
+const ALLOWED_TRANSITIONS: Record<SessionPhase, readonly SessionPhase[]> = {
+  'starting': ['server-ready'],
+  'server-ready': ['provisioning-tunnel'],
+  'provisioning-tunnel': ['tunnel-provisioned'],
+  'tunnel-provisioned': ['dns-created', 'running'],
+  'dns-created': ['running'],
+  'running': [],
+  'tearing-down': [],
+  'kept': [],
+  'failed': []
+}
+
 export interface PreviewAdapters {
   tunnel: TunnelAdapter
   dns?: DnsAdapter
@@ -223,6 +235,13 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
 
     const from = state.state
+    if (from !== to && !ALLOWED_TRANSITIONS[from].includes(to)) {
+      throw new FlashTunnelError(`Illegal session state transition: ${from} -> ${to}`, {
+        code: 'STATE_TRANSITION_INVALID',
+        exitCode: 1
+      })
+    }
+
     state.state = to
     if (from !== to) {
       events.emit('state', { from, to })
