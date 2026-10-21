@@ -218,7 +218,7 @@ strategy:
 
 - 没有 push/PR 触发的 workflow；日常提交不产生 Actions 运行，合并前本地跑同一组命令。
 - `release.yaml` 只有一个入口（tag），内部 `verify` job 跑矩阵、`publish` job `needs: verify`。
-- `verify` 执行 `pnpm lint`、`pnpm typecheck`、`pnpm test`（单元 + 集成 mock）、`pnpm build`。
+- `verify` 执行 `pnpm build`、`pnpm lint`、`pnpm typecheck`、`pnpm test`（单元 + 集成 mock）。先 build 再 typecheck，保证干净 checkout 下 workspace 包的类型产物已存在。
 - 单独 job 跑 E2E（nightly，仓库 secrets，仅主仓库）。
 - 发布前在干净容器里 `npx flash-tunnel --version` 冒烟，验证 `bin` 与依赖打包正确。
 - 首次发布链路单独演练一次：`0.0.0 --tag bootstrap` 占位 → 配置 Trusted Publisher → `0.1.0` tag 发布（详见 11 的发布流程）。

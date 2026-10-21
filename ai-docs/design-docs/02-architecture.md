@@ -34,7 +34,7 @@
 
 - `types` 不依赖任何包（可被第三方适配器安全依赖）。
 - `utils` 只依赖 Node 内置能力与少量运行时库，不依赖其它工作区包。
-- `config` 只依赖 `types`，提供 `defineConfig`（identity）与全部配置类型，不读取文件、不加载 env。
+- `config` 不依赖任何工作区包，提供 `defineConfig`（identity）与全部配置类型，不读取文件、不加载 env。
 - `core` 依赖 `types` + `utils` + `config`，**不**静态依赖任何具体适配器（内置适配器由 CLI 注入）。
 - `adapter-*` 依赖 `types`（+ `utils`），不依赖 `core`。
 - `cli` 依赖 `core` + `config` + 内置适配器（`@flash-tunnel/adapter-cloudflare`）。

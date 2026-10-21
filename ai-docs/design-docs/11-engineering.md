@@ -261,7 +261,7 @@ export default defineBuildConfig(mergeDefaultBuildConfig({
 | --- | --- | --- | --- |
 | `flash-tunnel` | `flash-tunnel` | `@flash-tunnel/cli`、`@flash-tunnel/config` | 是（bin） |
 | `cli` | `@flash-tunnel/cli` | `@flash-tunnel/core`、`@flash-tunnel/config`、`@flash-tunnel/adapter-cloudflare`、`cac`、`yocto-spinner`、`@inquirer/prompts`、`open`、`clipboardy`（可选动态导入）、`qrcode-terminal`（可选） | 是 |
-| `config` | `@flash-tunnel/config` | `@flash-tunnel/types` | 是 |
+| `config` | `@flash-tunnel/config` | 无（standalone） | 是 |
 | `core` | `@flash-tunnel/core` | `@flash-tunnel/types`、`@flash-tunnel/utils`、`@flash-tunnel/config`、`unconfig`、`jiti`、`defu`、`pathe`、`tinyglobby` | 是 |
 | `types` | `@flash-tunnel/types` | 无 | 是 |
 | `utils` | `@flash-tunnel/utils` | `pathe` | 是 |
@@ -429,7 +429,7 @@ packages/cli/src/
 
 workflow 内分两个 job：
 
-1. `verify`：矩阵 Linux/Windows × Node 22/24，跑 `install → lint → typecheck → test → build`。
+1. `verify`：矩阵 Linux/Windows × Node 22/24，跑 `install → build → lint → typecheck → test`。
 2. `publish`：`needs: verify`，只有 verify 全绿才执行，用 OIDC 发布。
 
 ```yaml
@@ -460,10 +460,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
-      - run: pnpm build
 
   publish:
     name: publish
@@ -495,6 +495,7 @@ jobs:
 
 - `pnpm/action-setup` 不写 `version`：从 `package.json#packageManager` 读取（参考 `ext-kit` 的注释）。
 - Windows 必须进 verify 矩阵：进程树停止、路径、`styleText` 的 TTY 行为都依赖平台。
+- **先 build 再 typecheck**：干净 checkout 下 workspace 包的类型入口指向 `dist`，未构建时 `tsc` 会找不到；根 `tsconfig` 的 `paths` 只是本地兜底。
 - 因为只有 tag 触发，日常提交不会产生 Actions 运行；合并/发布前由本地 `pnpm lint && pnpm typecheck && pnpm test && pnpm build` 自查。
 - 如果以后要拆出可复用的 check workflow，只能用 `workflow_call` 并由 `release.yaml` 调用，触发入口仍然是 tag。
 
@@ -574,7 +575,7 @@ pnpm release          # bumpp -r：全部包 0.0.0 → 0.1.0，提交并打 v0.1
 git push --follow-tags
 ```
 
-tag 触发 `release.yaml`：先跑 `verify`（Linux/Windows × Node 22/24 的 lint/typecheck/test/build），全部通过后 `publish` 才执行 `pnpm -r publish`，通过 OIDC 完成发布并生成 provenance。
+tag 触发 `release.yaml`：先跑 `verify`（Linux/Windows × Node 22/24 的 build/lint/typecheck/test），全部通过后 `publish` 才执行 `pnpm -r publish`，通过 OIDC 完成发布并生成 provenance。
 
 发布后检查：
 

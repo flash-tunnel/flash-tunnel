@@ -1,6 +1,4 @@
-import type { TunnelMode } from '@flash-tunnel/types'
-
-export type ConfigTunnelMode = Exclude<TunnelMode, 'assigned'>
+export type ConfigTunnelMode = 'named' | 'quick'
 
 export interface DomainConfig {
   provider?: string

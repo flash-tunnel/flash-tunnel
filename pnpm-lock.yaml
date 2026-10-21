@@ -224,11 +224,7 @@ importers:
         specifier: ^7.0.0
         version: 7.1.0
 
-  packages/config:
-    dependencies:
-      '@flash-tunnel/types':
-        specifier: workspace:*
-        version: link:../types
+  packages/config: {}
 
   packages/core:
     dependencies:
