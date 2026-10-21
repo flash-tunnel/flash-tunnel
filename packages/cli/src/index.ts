@@ -23,7 +23,9 @@ import {
   FlashTunnelError,
   isProcessAlive,
   listSessionStates,
+  loadDnsAdapter,
   loadFlashTunnelConfig,
+  loadTunnelAdapter,
   ProjectLockedError,
   reapSession,
   resolveConfig,
@@ -239,6 +241,9 @@ function createCleaner(): SessionCleaner | undefined {
       if (!state.dns) {
         return
       }
+      if (state.dns.provider !== 'cloudflare') {
+        throw new Error(`No DNS cleaner is registered for provider "${state.dns.provider}"`)
+      }
       try {
         const records = await api.listDnsRecords(state.dns.zoneId, { name: state.dns.hostname })
         const record = records.find(item => item.id === state.dns?.recordId)
@@ -264,6 +269,9 @@ function createCleaner(): SessionCleaner | undefined {
     removeTunnel: async (state: SessionState) => {
       if (!state.tunnel || state.tunnel.mode !== 'named') {
         return
+      }
+      if (state.tunnel.provider !== 'cloudflare') {
+        throw new Error(`No tunnel cleaner is registered for provider "${state.tunnel.provider}"`)
       }
       if (!state.tunnel.accountId) {
         throw new Error('Session is missing the Cloudflare account id')
@@ -468,7 +476,10 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     runBuildScript(preliminary.values.server.cwd, reporter)
   }
 
-  if (preliminary.values.tunnel.mode === 'named' && !apiToken && !options.dryRun) {
+  const requiresCloudflare = preliminary.values.tunnel.provider === 'cloudflare'
+    || preliminary.values.domain.provider === 'cloudflare'
+
+  if (preliminary.values.tunnel.mode === 'named' && requiresCloudflare && !apiToken && !options.dryRun) {
     if (canPrompt(options) && await confirmQuickFallback()) {
       cliConfig.mode = 'quick'
     }
@@ -483,7 +494,12 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   let inferredZone: string | undefined
   let zoneIssue: string | undefined
-  if (preliminary.values.tunnel.mode === 'named' && !preliminary.values.domain.zone && apiToken) {
+  if (
+    preliminary.values.tunnel.mode === 'named'
+    && preliminary.values.domain.provider === 'cloudflare'
+    && !preliminary.values.domain.zone
+    && apiToken
+  ) {
     const api = new CloudflareApi({ apiToken, apiBase })
     const zones = (await api.listZones()).filter(item => item.status === 'active')
     if (zones.length === 1 && zones[0]) {
@@ -584,7 +600,11 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   const mode = resolved.values.tunnel.mode
   const zone = resolved.values.domain.zone
 
-  if (mode === 'named' && !zone) {
+  if (
+    mode === 'named'
+    && !zone
+    && (resolved.values.tunnel.provider === 'cloudflare' || resolved.values.domain.provider === 'cloudflare')
+  ) {
     throw new FlashTunnelError(zoneIssue ?? 'Named mode requires a zone', {
       code: zoneIssue ? 'ZONE_NOT_FOUND' : 'ZONE_REQUIRED',
       exitCode: 2,
@@ -604,21 +624,29 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     }
   }
 
-  const tunnel = createCloudflareTunnel({
-    cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
-    accountId: resolved.values.providers.cloudflare.accountId,
-    apiToken,
-    apiBase,
-    originRequest: resolved.values.providers.cloudflare.originRequest
-  })
-
-  const dns = mode === 'named' && apiToken
-    ? createCloudflareDns({
+  const tunnelProvider = resolved.values.tunnel.provider
+  const domainProvider = resolved.values.domain.provider
+  const tunnel = tunnelProvider === 'cloudflare'
+    ? createCloudflareTunnel({
+        cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
+        accountId: resolved.values.providers.cloudflare.accountId,
         apiToken,
-        zoneId: resolved.values.providers.cloudflare.zoneId,
-        apiBase
+        apiBase,
+        originRequest: resolved.values.providers.cloudflare.originRequest
       })
-    : undefined
+    : await loadTunnelAdapter(tunnelProvider, resolved.configDir)
+
+  const dns = mode !== 'named'
+    ? undefined
+    : domainProvider === 'cloudflare'
+      ? apiToken
+        ? createCloudflareDns({
+            apiToken,
+            zoneId: resolved.values.providers.cloudflare.zoneId,
+            apiBase
+          })
+        : undefined
+      : await loadDnsAdapter(domainProvider, resolved.configDir)
 
   const combination = validateAdapterCombination({
     tunnel,
