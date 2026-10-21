@@ -87,6 +87,18 @@ export async function choosePortConflict(port: number): Promise<'exit' | 'reuse'
   }
 }
 
+export async function confirmOverwrite(hostname: string): Promise<boolean> {
+  try {
+    return await confirm({
+      message: `DNS record "${hostname}" was created by another tool. Replace it?`,
+      default: false
+    })
+  }
+  catch (error) {
+    promptFailure(error)
+  }
+}
+
 export async function confirmKeep(): Promise<boolean> {
   try {
     return await confirm({

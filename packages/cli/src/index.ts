@@ -7,7 +7,7 @@ import type {
   SessionCleaner,
   SessionState
 } from '@flash-tunnel/core'
-import type { FlashTunnelEvents } from '@flash-tunnel/types'
+import type { AdapterContext, FlashTunnelEvents } from '@flash-tunnel/types'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -49,6 +49,7 @@ import {
   chooseWorkspace,
   chooseZone,
   confirmKeep,
+  confirmOverwrite,
   confirmQuickFallback
 } from './ui/prompts'
 import { Reporter } from './ui/reporter'
@@ -719,6 +720,43 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     reporter.warn(warning)
   }
 
+  let overwrite = options.overwrite ?? false
+  if (mode === 'named' && dns && zone && hostname) {
+    const preflightCtx: AdapterContext = {
+      sessionId: 'ft_preflight',
+      cwd,
+      signal: new AbortController().signal,
+      now: Date.now,
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (message: string) => reporter.warn(message),
+        error: (message: string) => reporter.warn(message)
+      }
+    }
+
+    try {
+      await dns.preflight(preflightCtx, {
+        zone,
+        name: hostname,
+        type: tunnel.capabilities.dns?.type ?? 'CNAME',
+        overwrite
+      })
+    }
+    catch (error) {
+      if (error instanceof AdapterError && error.code === 'RECORD_CONFLICT' && canPrompt(options)) {
+        overwrite = await confirmOverwrite(hostname)
+        if (!overwrite) {
+          throw error
+        }
+        reporter.warn(`Overwriting the existing DNS record for ${hostname}`)
+      }
+      else {
+        throw error
+      }
+    }
+  }
+
   let keep = options.keep ?? false
   if (keep && canPrompt(options)) {
     keep = await confirmKeep()
@@ -794,7 +832,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       hostname,
       zone,
       keep,
-      overwrite: options.overwrite,
+      overwrite,
       autoStopAfterMs,
       configSource: source,
       signal: controller.signal,
