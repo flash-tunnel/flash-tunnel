@@ -1,11 +1,11 @@
 import type { DnsAdapter, DnsRecordRef, TunnelAdapter } from '@flash-tunnel/types'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { AdapterError } from '@flash-tunnel/types'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readSessionState, startPreviewSession } from '../src'
+import { readSessionState, sessionLogPath, startPreviewSession } from '../src'
 
 const directories: string[] = []
 const sessions: Array<{ stop: () => Promise<void> }> = []
@@ -189,6 +189,9 @@ describe('startPreviewSession', () => {
       state: 'running'
     })
     expect(state?.tunnel?.provider).toBe('fake')
+
+    const serverLog = await readFile(sessionLogPath(cwd, session.sessionId, 'server'), 'utf8')
+    expect(serverLog).toContain('Local: http://127.0.0.1')
 
     const response = await fetch(session.publicUrl)
     expect(await response.text()).toBe('session-ok')

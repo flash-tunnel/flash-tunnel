@@ -17,6 +17,7 @@ import { AdapterError } from '@flash-tunnel/types'
 import { randomId, sleep, slugify } from '@flash-tunnel/utils'
 import { FlashTunnelError } from '../errors'
 import { Emitter } from '../events'
+import { createSessionLog, pruneSessionLogs } from '../logs'
 import { detectServer } from '../server/detect'
 import { startServer } from '../server/run'
 import {
@@ -229,6 +230,16 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     await saveState()
   }
 
+  const serverLog = persist
+    ? await createSessionLog(cwd, sessionId, 'server').catch(() => undefined)
+    : undefined
+  const tunnelLog = persist
+    ? await createSessionLog(cwd, sessionId, 'tunnel').catch(() => undefined)
+    : undefined
+  if (persist) {
+    void pruneSessionLogs(cwd, 10).catch(() => {})
+  }
+
   const serverStartedAt = Date.now()
   const plan = detectServer(cwd, config.server)
   emitStep('server', 'start')
@@ -237,7 +248,10 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     server = await startServer(plan, {
       timeoutMs: config.server?.timeout,
       signal: options.signal,
-      onLog: options.onLog
+      onLog: (line, stream) => {
+        options.onLog?.(line, stream)
+        serverLog?.write(line)
+      }
     })
   }
   catch (error) {
@@ -420,6 +434,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       }
 
       const { failures, removed } = await cleanup()
+      await serverLog?.close()
+      await tunnelLog?.close()
 
       events.emit('cleanup:done', {
         ok: failures.length === 0,
@@ -533,7 +549,10 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
 
     await adapters.tunnel.start(ctx, handle, {
-      onLog: (line, stream) => options.onLog?.(line, stream),
+      onLog: (line, stream) => {
+        options.onLog?.(line, stream)
+        tunnelLog?.write(line)
+      },
       onExit: (info) => {
         options.onLog?.(`cloudflared exited (code ${info.code ?? 'null'})`, 'stderr')
         resolveTunnelExit()
@@ -640,6 +659,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
 
     stopping = true
     const { failures } = await cleanup()
+    await serverLog?.close()
+    await tunnelLog?.close()
 
     events.emit('cleanup:done', {
       ok: failures.length === 0,
