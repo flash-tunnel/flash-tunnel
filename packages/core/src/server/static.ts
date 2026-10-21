@@ -103,7 +103,14 @@ export async function startStaticServer(plan: ServerPlan): Promise<ServerHandle>
         'content-type': MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
         'cache-control': 'no-store'
       })
-      createReadStream(filePath).pipe(response)
+      const stream = createReadStream(filePath)
+      stream.once('error', () => {
+        if (!response.headersSent) {
+          response.writeHead(500)
+        }
+        response.end()
+      })
+      stream.pipe(response)
     }
     catch {
       response.writeHead(500)
