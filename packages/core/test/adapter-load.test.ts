@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { loadDnsAdapter, loadTunnelAdapter } from '../src'
+import { AdapterRegistry, loadDnsAdapter, loadTunnelAdapter } from '../src'
 
 let directory: string
 
@@ -42,6 +42,44 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true })
+})
+
+describe('adapterRegistry', () => {
+  it('resolves registered factories and lists them', async () => {
+    await writeFile(join(directory, 'tunnel.mjs'), tunnelSource())
+    await writeFile(join(directory, 'dns.mjs'), dnsSource)
+
+    const registry = new AdapterRegistry()
+    registry.registerTunnel('built', () => ({
+      kind: 'tunnel',
+      id: 'built',
+      apiVersion: 1,
+      capabilities: { modes: ['quick'], publicHostname: 'assigned', requiresDns: false, concurrent: true },
+      preflight: async () => {},
+      provision: async () => ({ provider: 'built', tunnelId: 't', name: 'n', secrets: {} }),
+      start: async () => {},
+      waitReady: async () => ({ state: 'connected', connections: 1 }),
+      stop: async () => {},
+      deprovision: async () => {}
+    }))
+    registry.registerDns('built-dns', () => ({
+      kind: 'dns',
+      id: 'built-dns',
+      apiVersion: 1,
+      capabilities: { recordTypes: ['CNAME'], proxied: true, ttl: true, comment: true, lookupByName: true },
+      preflight: async () => {},
+      ensure: async () => ({ provider: 'built-dns', zoneId: 'z', recordId: 'r', name: 'n', type: 'CNAME', content: 'c', proxied: true }),
+      remove: async () => {},
+      find: async () => []
+    }))
+
+    expect(registry.listTunnels()).toEqual(['built'])
+    expect(registry.listDns()).toEqual(['built-dns'])
+    expect((await registry.resolveTunnel('built', directory)).id).toBe('built')
+    expect((await registry.resolveDns('built-dns', directory)).id).toBe('built-dns')
+    expect((await registry.resolveTunnel('file:./tunnel.mjs', directory)).id).toBe('fake')
+    expect((await registry.resolveDns('file:./dns.mjs', directory)).id).toBe('fake-dns')
+  })
 })
 
 describe('adapter loader', () => {

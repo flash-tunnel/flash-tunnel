@@ -14,6 +14,7 @@ import { resolve } from 'node:path'
 import process from 'node:process'
 import { CloudflareApi, createCloudflareDns, createCloudflareTunnel } from '@flash-tunnel/adapter-cloudflare'
 import {
+  AdapterRegistry,
   cleanSession,
   cleanSessions,
   CleanupError,
@@ -26,9 +27,7 @@ import {
   FlashTunnelError,
   isProcessAlive,
   listSessionStates,
-  loadDnsAdapter,
   loadFlashTunnelConfig,
-  loadTunnelAdapter,
   reapSession,
   resolveConfig,
   sameProject,
@@ -685,27 +684,25 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   const tunnelProvider = resolved.values.tunnel.provider
   const domainProvider = resolved.values.domain.provider
-  const tunnel = tunnelProvider === 'cloudflare'
-    ? createCloudflareTunnel({
-        cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
-        accountId: resolved.values.providers.cloudflare.accountId,
-        apiToken,
-        apiBase,
-        originRequest: resolved.values.providers.cloudflare.originRequest
-      })
-    : await loadTunnelAdapter(tunnelProvider, resolved.configDir)
 
-  const dns = mode !== 'named'
-    ? undefined
-    : domainProvider === 'cloudflare'
-      ? apiToken
-        ? createCloudflareDns({
-            apiToken,
-            zoneId: resolved.values.providers.cloudflare.zoneId,
-            apiBase
-          })
-        : undefined
-      : await loadDnsAdapter(domainProvider, resolved.configDir)
+  const registry = new AdapterRegistry()
+  registry.registerTunnel('cloudflare', () => createCloudflareTunnel({
+    cloudflaredPath: resolved.values.providers.cloudflare.cloudflaredPath,
+    accountId: resolved.values.providers.cloudflare.accountId,
+    apiToken,
+    apiBase,
+    originRequest: resolved.values.providers.cloudflare.originRequest
+  }))
+  registry.registerDns('cloudflare', () => createCloudflareDns({
+    apiToken: apiToken ?? '',
+    zoneId: resolved.values.providers.cloudflare.zoneId,
+    apiBase
+  }))
+
+  const tunnel = await registry.resolveTunnel(tunnelProvider, resolved.configDir)
+  const dns = mode === 'named'
+    ? await registry.resolveDns(domainProvider, resolved.configDir)
+    : undefined
 
   const combination = validateAdapterCombination({
     tunnel,

@@ -90,7 +90,7 @@
 - [x] 全局 `~/.flash-tunnel/sessions` 索引
 - [x] 事件总线（NDJSON 兼容）
 - [x] 组合校验 C1–C7
-- [ ] 适配器注册表与动态加载（内置/npm/本地 ts）
+- [x] 适配器注册表与动态加载（内置/npm/本地 ts）
 - [x] 第三方适配器 `apiVersion` 校验与错误提示
 - [x] `autoStopAfter`：`expiresAt` 落盘、到点正常清理、退出码 0
 
