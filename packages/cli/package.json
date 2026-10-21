@@ -41,7 +41,7 @@
     "@flash-tunnel/types": "workspace:*",
     "@flash-tunnel/utils": "workspace:*",
     "@inquirer/prompts": "^8.7.4",
-    "cac": "^7.0.0",
+    "cac": "^7.1.0",
     "yocto-spinner": "^1.2.2"
   }
 }
