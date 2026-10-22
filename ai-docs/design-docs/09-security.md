@@ -126,17 +126,10 @@ const SECRET_PATTERNS = [
 | 文件 | 权限 |
 | --- | --- |
 | `~/.flash-tunnel/` | `0700` |
-| `sessions/*.json`、日志 | `0600` |
-| 项目 `.flash-tunnel/` | 跟随项目；`.gitignore` 自动加入（`init` 写入，未初始化时也会提示） |
+| `sessions/*.json`、`projects/<key>/*.json`、日志 | `0600` |
 | `lock.json` | `0600`，仅含 pid 与 sessionId |
 
-`init` 会在项目 `.gitignore` 追加：
-
-```gitignore
-.flash-tunnel/
-```
-
-避免状态文件（含域名、账号 id、记录 id）被提交。
+项目目录不写入任何运行时文件，因此 `init` 不再修改 `.gitignore`；状态文件（含域名、账号 id、记录 id）只落在 `~/.flash-tunnel/projects/<key>/` 下。旧版本遗留的项目内 `.flash-tunnel/` 不再写入，仅在读取旧会话时兼容，可手动删除。
 
 ## CI 中的注意事项
 

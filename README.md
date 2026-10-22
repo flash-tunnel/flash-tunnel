@@ -92,7 +92,7 @@ flash-tunnel doctor
 | `flash-tunnel` / `flash-tunnel start` | Detect the project, start the local server, create the tunnel, and wait |
 | `flash-tunnel clean` | Clean leftover sessions (`--session` / `--project` / `--stale` / `--all --yes` / `--dry-run`) |
 | `flash-tunnel doctor` | Check Node, config, token, zone, cloudflared, ports, and leftover sessions |
-| `flash-tunnel init` | Create `flash-tunnel.ts` and add `.flash-tunnel/` to `.gitignore` |
+| `flash-tunnel init` | Create `flash-tunnel.ts` (runtime state stays outside the project) |
 | `flash-tunnel providers` | List built-in adapters and their capabilities |
 
 ## Configuration
@@ -234,24 +234,26 @@ flash-tunnel clean --all --yes
 ## CI usage
 
 ```bash
+READY_FILE="${TMPDIR:-/tmp}/flash-tunnel-ready.json"
 npx flash-tunnel \
   --json \
-  --ready-file .flash-tunnel/ready.json \
+  --ready-file "$READY_FILE" \
   --auto-stop 2h
 ```
 
 - stdout contains only NDJSON; the `ready` event includes the public URL.
-- `--ready-file` is convenient for polling from scripts.
+- `--ready-file` is convenient for polling from scripts; point it outside the checkout if you do not want files in the project.
 - `--on-ready` receives `FLASH_TUNNEL_URL`, `FLASH_TUNNEL_LOCAL_URL`, `FLASH_TUNNEL_SESSION_ID`, and related variables.
 
 ```bash
 # Read the URL from the ready file
-node -p "require('./.flash-tunnel/ready.json').url"
+node -p "require('$READY_FILE').url"
 ```
 
 ## Security
 
 - The token is read from the environment only. It is never written to config, state, or argv.
+- Runtime state and logs live in `~/.flash-tunnel/projects/<project-key>/`; nothing is written into the checkout. Inactive state is pruned after 7 days (`FLASH_TUNNEL_RETENTION_DAYS`).
 - Grant only the four permissions above and set an expiry date.
 - Random subdomains are used by default to avoid collisions and stale DNS caches.
 - DNS records and tunnels are deleted by recorded ID and checked against the session marker.

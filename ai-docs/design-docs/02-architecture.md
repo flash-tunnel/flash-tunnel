@@ -180,7 +180,7 @@ interface FlashTunnelEvents {
 | 域名控制 | Cloudflare DNS | `DnsAdapter` | DNSPod、阿里云 DNS、Route53 |
 | 本地服务 | 内置探测 + 启动 | 内部接口（后续可暴露） | 自定义 runner、Docker Compose |
 | 通知/输出 | 终端步骤行（spinner）+ 浏览器 + 剪贴板 | CLI UI 层 | 桌面通知、Webhook、二维码 |
-| 状态存储 | 本地文件 | `StateStore` | 项目级 `.flash-tunnel/`、系统 keychain |
+| 状态存储 | 本地文件 | `StateStore` | `~/.flash-tunnel/projects/<key>/`（项目目录零文件）、系统 keychain |
 
 ## 关键决策
 

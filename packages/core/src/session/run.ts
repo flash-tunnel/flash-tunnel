@@ -22,6 +22,7 @@ import { createSessionLog, pruneSessionLogs } from '../logs'
 import { VITE_ALLOWED_HOSTS_ENV, viteAllowedHostsEnv } from '../server/allowed-hosts'
 import { detectServer } from '../server/detect'
 import { startServer } from '../server/run'
+import { pruneProjectState } from '../state/prune'
 import {
   acquireProjectLock,
   releaseProjectLock,
@@ -267,6 +268,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     : undefined
   if (persist) {
     void pruneSessionLogs(cwd, 10).catch(() => {})
+    void pruneProjectState().catch(() => {})
   }
 
   const serverStartedAt = Date.now()

@@ -13,7 +13,7 @@
 - [x] `scripts/build.common.ts` + 各包 `build.config.ts`
 - [x] 七个包：`flash-tunnel` / `cli` / `config` / `core` / `types` / `utils` / `adapter-cloudflare`
 - [x] `packages/flash-tunnel/bin/flash-tunnel.mjs` 可执行位与 shebang
-- [x] `.gitignore`（`node_modules`、`dist`、`.flash-tunnel/`、`coverage`、`*.log`）
+- [x] `.gitignore`（`node_modules`、`dist`、`coverage`、`*.log`）
 - [x] `.editorconfig`、`LICENSE`、`README.md` 骨架
 - [x] 只有 `.github/workflows/release.yaml`（仅 `v*` tag 触发；verify 矩阵 Linux/Windows × Node 22/24，通过后才 publish）
 - [x] 不存在 push/PR 触发的 ci.yaml；需要独立 check 时只能 `workflow_call` 由 release.yaml 调用

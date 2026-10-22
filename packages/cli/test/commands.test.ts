@@ -36,17 +36,16 @@ afterEach(async () => {
 })
 
 describe('init', () => {
-  it('creates the config and adds the ignore entry once', async () => {
+  it('creates the config without touching the project gitignore', async () => {
     const reporter = new Reporter({ json: true })
 
     await runInit({ cwd: directory }, reporter)
     await runInit({ cwd: directory, force: true }, reporter)
 
     const config = await readFile(join(directory, 'flash-tunnel.ts'), 'utf8')
-    const gitignore = await readFile(join(directory, '.gitignore'), 'utf8')
 
     expect(config).toContain('defineConfig')
-    expect(gitignore.split('\n').filter(line => line === '.flash-tunnel/')).toHaveLength(1)
+    await expect(readFile(join(directory, '.gitignore'), 'utf8')).rejects.toThrow()
     expect(out.filter(line => line.includes('"type":"init"'))).toHaveLength(2)
   })
 

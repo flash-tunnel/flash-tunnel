@@ -4,21 +4,24 @@
 
 ## 会话与状态持久化
 
-一次运行 = 一个会话（`sessionId = ft_<base36时间>_<4位随机>`）。状态文件有两层：
+一次运行 = 一个会话（`sessionId = ft_<base36时间>_<4位随机>`）。状态全部放在全局目录，项目目录零文件：
 
 ```text
-<project>/.flash-tunnel/
-├─ session.json          # 当前会话（原子写），退出成功后删除
-├─ lock.json             # 项目锁，防止同项目并发
-└─ logs/
-   ├─ server-<sessionId>.log
-   └─ tunnel-<sessionId>.log
-
 ~/.flash-tunnel/
-├─ sessions/<sessionId>.json   # 全局索引，供跨项目/崩溃后扫描
-├─ bin/                        # 可选：cloudflared 自动下载目录
-└─ logs/reap-<sessionId>.log   # reaper 日志
+├─ projects/<projectKey>/       # projectKey = 目录名 + 路径哈希
+│  ├─ session.json              # 当前会话（原子写），退出成功后删除
+│  ├─ lock.json                 # 项目锁，防止同项目并发
+│  └─ logs/
+│     ├─ server-<sessionId>.log
+│     └─ tunnel-<sessionId>.log
+├─ sessions/<sessionId>.json    # 全局索引，供跨项目/崩溃后扫描
+├─ bin/                         # 可选：cloudflared 自动下载目录
+└─ logs/reap-<sessionId>.log    # reaper 日志
 ```
+
+旧版本的 `<project>/.flash-tunnel/` 只读兼容：读取时会回退到旧 `session.json`，`clean` 会顺带删除；不再写入。`FLASH_TUNNEL_HOME` 可以把整个目录搬到别处。
+
+每次启动会话时会顺带清理过期的 `projects/<key>/` 与 `logs/reap-*.log`：默认保留 7 天，`FLASH_TUNNEL_RETENTION_DAYS=1` 可改短，设为 `0` 关闭自动清理。活跃会话（进程存活且心跳新鲜）不受影响。
 
 ### session.json
 
@@ -174,7 +177,7 @@ process.on('exit', () => {
 
 `flash-tunnel __reap --session <id>`：
 
-1. 读取 `~/.flash-tunnel/sessions/<id>.json` 与项目内 `session.json`。
+1. 读取 `~/.flash-tunnel/sessions/<id>.json`（旧版本遗留的项目内 `session.json` 也会回退读取）。
 2. 若 pid 仍存活 → 直接退出（避免和正常会话抢资源）。
 3. 重新构造适配器（凭据仍从环境变量读取；若 reaper 由原进程 spawn，环境变量会继承）。
 4. 按账本逆序删除：

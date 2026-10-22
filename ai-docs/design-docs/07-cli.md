@@ -360,7 +360,7 @@ const zone = await select({
 ```json
 {
   "scripts": {
-    "preview:share": "flash-tunnel --json --ready-file .flash-tunnel/ready.json --auto-stop 2h"
+    "preview:share": "flash-tunnel --json --ready-file \"$TMPDIR/flash-tunnel-ready.json\" --auto-stop 2h"
   }
 }
 ```

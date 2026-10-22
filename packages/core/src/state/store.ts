@@ -1,9 +1,11 @@
 import type { TunnelMode } from '@flash-tunnel/types'
-import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, realpathSync } from 'node:fs'
 import { appendFile, chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
+import { slugify } from '@flash-tunnel/utils'
 import { isProcessAlive } from '../process'
 
 export type SessionPhase
@@ -84,8 +86,38 @@ export function homeDirectory(): string {
   return process.env.FLASH_TUNNEL_HOME ?? join(homedir(), '.flash-tunnel')
 }
 
+/**
+ * Stable, filesystem-safe key for a project. Real paths are used so symlinked
+ * checkouts of the same project share one state directory; Windows paths are
+ * lowercased because the filesystem is case-insensitive.
+ */
+export function projectKey(projectRoot: string): string {
+  let normalized = resolve(projectRoot)
+  try {
+    normalized = realpathSync(normalized)
+  }
+  catch {
+    // The project may already be gone; fall back to the resolved path.
+  }
+  if (process.platform === 'win32') {
+    normalized = normalized.toLowerCase()
+  }
+
+  const hash = createHash('sha256').update(normalized).digest('hex').slice(0, 8)
+  return `${slugify(basename(normalized), 32) || 'project'}-${hash}`
+}
+
+/**
+ * Runtime state and logs live outside the project so flash-tunnel never leaves
+ * files in the user's checkout.
+ */
 export function projectStateDirectory(projectRoot: string): string {
-  return join(projectRoot, '.flash-tunnel')
+  return join(homeDirectory(), 'projects', projectKey(projectRoot))
+}
+
+/** Pre-0.2 location, read-only compatibility for existing installs. */
+export function legacyProjectStateDirectory(projectRoot: string): string {
+  return join(resolve(projectRoot), '.flash-tunnel')
 }
 
 function globalSessionsDirectory(): string {
@@ -96,12 +128,20 @@ function sessionFile(projectRoot: string): string {
   return join(projectStateDirectory(projectRoot), 'session.json')
 }
 
+function legacySessionFile(projectRoot: string): string {
+  return join(legacyProjectStateDirectory(projectRoot), 'session.json')
+}
+
 function globalSessionFile(sessionId: string): string {
   return join(globalSessionsDirectory(), `${sessionId}.json`)
 }
 
 function lockFile(projectRoot: string): string {
   return join(projectStateDirectory(projectRoot), 'lock.json')
+}
+
+function legacyLockFile(projectRoot: string): string {
+  return join(legacyProjectStateDirectory(projectRoot), 'lock.json')
 }
 
 async function ensurePrivateDirectory(directory: string): Promise<void> {
@@ -149,12 +189,15 @@ export async function writeSessionState(state: SessionState): Promise<void> {
 }
 
 export async function readSessionState(projectRoot: string): Promise<SessionState | undefined> {
-  try {
-    return JSON.parse(await readFile(sessionFile(projectRoot), 'utf8')) as SessionState
+  for (const file of [sessionFile(projectRoot), legacySessionFile(projectRoot)]) {
+    try {
+      return JSON.parse(await readFile(file, 'utf8')) as SessionState
+    }
+    catch {
+      // Try the next location.
+    }
   }
-  catch {
-    return undefined
-  }
+  return undefined
 }
 
 export async function readGlobalSessionState(sessionId: string): Promise<SessionState | undefined> {
@@ -199,26 +242,30 @@ export async function listSessionStates(): Promise<SessionState[]> {
 
 export async function removeSessionState(state: SessionState): Promise<void> {
   await rm(sessionFile(state.projectRoot), { force: true })
+  await rm(legacySessionFile(state.projectRoot), { force: true })
   await rm(globalSessionFile(state.sessionId), { force: true })
 }
 
 export async function acquireProjectLock(projectRoot: string, sessionId: string): Promise<void> {
   await ensurePrivateDirectory(projectStateDirectory(projectRoot))
-  const path = lockFile(projectRoot)
 
-  try {
-    const existing = JSON.parse(await readFile(path, 'utf8')) as { sessionId?: string, pid?: number }
-    if (existing.pid && existing.sessionId && existing.sessionId !== sessionId && isProcessAlive(existing.pid)) {
-      throw new ProjectLockedError(existing.sessionId)
+  // The legacy project-local lock may still belong to a session started by an
+  // older flash-tunnel; respect it while that process is alive.
+  for (const path of [lockFile(projectRoot), legacyLockFile(projectRoot)]) {
+    try {
+      const existing = JSON.parse(await readFile(path, 'utf8')) as { sessionId?: string, pid?: number }
+      if (existing.pid && existing.sessionId && existing.sessionId !== sessionId && isProcessAlive(existing.pid)) {
+        throw new ProjectLockedError(existing.sessionId)
+      }
+    }
+    catch (error) {
+      if (error instanceof ProjectLockedError) {
+        throw error
+      }
     }
   }
-  catch (error) {
-    if (error instanceof ProjectLockedError) {
-      throw error
-    }
-  }
 
-  await writeJson(path, {
+  await writeJson(lockFile(projectRoot), {
     sessionId,
     pid: process.pid,
     acquiredAt: new Date().toISOString()

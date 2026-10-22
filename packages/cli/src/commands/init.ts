@@ -1,6 +1,6 @@
 import type { Reporter } from '../ui/reporter'
 import { existsSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { symbols } from '../ui/symbols'
@@ -16,8 +16,6 @@ export default defineConfig({
 })
 `
 
-const GITIGNORE_ENTRY = '.flash-tunnel/'
-
 export interface InitOptions {
   cwd?: string
   force?: boolean
@@ -26,7 +24,6 @@ export interface InitOptions {
 export async function runInit(options: InitOptions, reporter: Reporter): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
   const configFile = join(cwd, 'flash-tunnel.ts')
-  const gitignoreFile = join(cwd, '.gitignore')
 
   const configExists = existsSync(configFile)
   if (configExists && !options.force) {
@@ -35,21 +32,9 @@ export async function runInit(options: InitOptions, reporter: Reporter): Promise
 
   await writeFile(configFile, CONFIG_TEMPLATE)
 
-  let gitignoreUpdated = false
-  const current = existsSync(gitignoreFile)
-    ? await readFile(gitignoreFile, 'utf8')
-    : ''
-  if (!current.split(/\r?\n/).includes(GITIGNORE_ENTRY)) {
-    const separator = current.length > 0 && !current.endsWith('\n') ? '\n' : ''
-    await writeFile(gitignoreFile, `${current}${separator}${GITIGNORE_ENTRY}\n`)
-    gitignoreUpdated = true
-  }
-
   reporter.event({
     type: 'init',
-    configFile,
-    gitignoreFile,
-    gitignoreUpdated
+    configFile
   })
 
   if (reporter.json) {
@@ -57,6 +42,5 @@ export async function runInit(options: InitOptions, reporter: Reporter): Promise
   }
 
   reporter.human(`${theme.ok(symbols.ok)} config    ${configFile}\n`)
-  reporter.human(`${gitignoreUpdated ? theme.ok(symbols.ok) : theme.dim(symbols.bullet)} gitignore ${gitignoreFile}${gitignoreUpdated ? '' : ' (already up to date)'}\n`)
   reporter.human(`\n${theme.dim('Next: edit flash-tunnel.ts, then run npx flash-tunnel')}\n`)
 }

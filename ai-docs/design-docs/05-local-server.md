@@ -189,8 +189,8 @@ Windows: taskkill /PID <pid> /T /F
 | 位置 | 内容 | 生命周期 |
 | --- | --- | --- |
 | 终端 | 步骤行 + 关键错误；`--verbose` 透传子进程输出（关闭 spinner） | 会话期间 |
-| `.flash-tunnel/logs/server-<sessionId>.log` | 完整 stdout/stderr（时间戳 + 流标记） | 保留最近 10 个会话 |
-| `.flash-tunnel/logs/tunnel-<sessionId>.log` | cloudflared 输出 | 同上 |
+| `~/.flash-tunnel/projects/<key>/logs/server-<sessionId>.log` | 完整 stdout/stderr（时间戳 + 流标记） | 最近 10 个会话且不超过 7 天 |
+| `~/.flash-tunnel/projects/<key>/logs/tunnel-<sessionId>.log` | cloudflared 输出 | 同上 |
 | 状态文件 | 命令、cwd、端口、pid | 会话结束删除 |
 
 日志中 Token/`Authorization` 一律替换为 `***`；`--json` 不输出日志正文。

@@ -92,7 +92,7 @@ flash-tunnel doctor
 | `flash-tunnel` / `flash-tunnel start` | 探测项目、启动本地服务、创建隧道并等待退出 |
 | `flash-tunnel clean` | 清理遗留会话：`--session` / `--project` / `--stale` / `--all --yes` / `--dry-run` |
 | `flash-tunnel doctor` | 检查 Node、配置、Token、Zone、cloudflared、端口和遗留会话 |
-| `flash-tunnel init` | 生成 `flash-tunnel.ts`，并把 `.flash-tunnel/` 加进 `.gitignore` |
+| `flash-tunnel init` | 生成 `flash-tunnel.ts`（运行时状态不会写进项目目录） |
 | `flash-tunnel providers` | 列出内置适配器与能力矩阵 |
 
 ## 配置
@@ -234,24 +234,26 @@ flash-tunnel clean --all --yes
 ## CI 集成
 
 ```bash
+READY_FILE="${TMPDIR:-/tmp}/flash-tunnel-ready.json"
 npx flash-tunnel \
   --json \
-  --ready-file .flash-tunnel/ready.json \
+  --ready-file "$READY_FILE" \
   --auto-stop 2h
 ```
 
 - stdout 只有 NDJSON；`ready` 事件里包含公网 URL。
-- `--ready-file` 适合在脚本里轮询。
+- `--ready-file` 适合在脚本里轮询；不想在项目里留文件就指到项目外。
 - `--on-ready` 会注入 `FLASH_TUNNEL_URL`、`FLASH_TUNNEL_LOCAL_URL`、`FLASH_TUNNEL_SESSION_ID` 等变量。
 
 ```bash
 # 读取 ready 文件里的 URL
-node -p "require('./.flash-tunnel/ready.json').url"
+node -p "require('$READY_FILE').url"
 ```
 
 ## 安全
 
 - Token 只从环境变量读取，不写入配置、不落盘、不出现在命令行参数里。
+- 运行时状态和日志放在 `~/.flash-tunnel/projects/<project-key>/`，项目目录里不会产生文件；非活跃状态 7 天后自动清理（`FLASH_TUNNEL_RETENTION_DAYS`）。
 - 建议 Token 只授予上表四项权限，并设置过期时间。
 - 默认随机子域，减少冲突和缓存问题。
 - 删除 DNS/隧道前会校验会话记录的 id 与归属标记。

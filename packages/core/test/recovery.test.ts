@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import type { SessionCleaner } from '../src'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -56,7 +56,6 @@ beforeEach(async () => {
   project = await mkdtemp(join(tmpdir(), 'flash-tunnel-recovery-'))
   process.env.FLASH_TUNNEL_HOME = home
 
-  await mkdir(join(project, '.flash-tunnel'), { recursive: true })
   await writeFile(join(project, 'server.mjs'), `
     import { createServer } from 'node:http'
     console.log('SERVER_PID ' + process.pid)

@@ -8,6 +8,7 @@ import {
   isSessionStale,
   listSessionStates,
   ProjectLockedError,
+  projectStateDirectory,
   readGlobalSessionState,
   readSessionState,
   releaseProjectLock,
@@ -107,13 +108,31 @@ describe('session state store', () => {
   })
 
   it('reclaims a stale lock', async () => {
-    await mkdir(join(project, '.flash-tunnel'), { recursive: true })
-    await writeFile(join(project, '.flash-tunnel', 'lock.json'), JSON.stringify({
+    const directory = projectStateDirectory(project)
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'lock.json'), JSON.stringify({
       sessionId: 'ft_old',
       pid: 999_999
     }))
 
     await expect(acquireProjectLock(project, 'ft_new')).resolves.toBeUndefined()
     await releaseProjectLock(project, 'ft_new')
+  })
+
+  it('keeps runtime state outside the project', async () => {
+    const directory = projectStateDirectory(project)
+
+    expect(directory.startsWith(home)).toBe(true)
+    expect(directory.startsWith(project)).toBe(false)
+    expect(directory).toBe(projectStateDirectory(project))
+    await expect(access(join(project, '.flash-tunnel'))).rejects.toThrow()
+  })
+
+  it('still reads state written by older versions', async () => {
+    const legacy = join(project, '.flash-tunnel')
+    await mkdir(legacy, { recursive: true })
+    await writeFile(join(legacy, 'session.json'), JSON.stringify(createState({ sessionId: 'ft_legacy' })))
+
+    expect(await readSessionState(project)).toMatchObject({ sessionId: 'ft_legacy' })
   })
 })
