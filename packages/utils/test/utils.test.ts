@@ -1,5 +1,6 @@
+import process from 'node:process'
 import { describe, expect, it } from 'vitest'
-import { formatDuration, parseDuration, randomId, redact, slugify } from '../src'
+import { formatDuration, parseDuration, randomId, redact, shellInvocation, slugify } from '../src'
 
 describe('slugify', () => {
   it('normalizes project names', () => {
@@ -58,5 +59,33 @@ describe('parseDuration', () => {
     expect(() => parseDuration('1d')).toThrow(RangeError)
     expect(() => parseDuration('500ms')).toThrow(RangeError)
     expect(() => parseDuration(10)).toThrow(RangeError)
+  })
+})
+
+describe('shellInvocation', () => {
+  it('keeps command and args separate outside Windows', () => {
+    if (process.platform === 'win32') {
+      return
+    }
+
+    expect(shellInvocation('cloudflared', ['--version'])).toEqual({
+      command: 'cloudflared',
+      args: ['--version'],
+      shell: false
+    })
+  })
+
+  it('joins and escapes a single shell command on Windows', () => {
+    if (process.platform !== 'win32') {
+      return
+    }
+
+    expect(shellInvocation('pnpm', ['run', 'build'])).toEqual({
+      command: 'pnpm run build',
+      args: [],
+      shell: true
+    })
+    expect(shellInvocation('C:\\Program Files\\cloudflared.exe', ['--version']).command)
+      .toBe('"C:\\Program Files\\cloudflared.exe" --version')
   })
 })

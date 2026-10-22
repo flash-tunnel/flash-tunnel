@@ -14,6 +14,7 @@ import {
   loadFlashTunnelConfig
 } from '@flash-tunnel/core'
 import { AdapterError } from '@flash-tunnel/types'
+import { shellInvocation } from '@flash-tunnel/utils'
 import { symbols } from '../ui/symbols'
 import { theme } from '../ui/theme'
 
@@ -59,9 +60,10 @@ function apiFor(token: string | undefined): CloudflareApi | undefined {
 }
 
 function checkCloudflared(path: string): DoctorCheck {
-  const result = spawnSync(path, ['--version'], {
+  const invocation = shellInvocation(path, ['--version'])
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8',
-    shell: process.platform === 'win32',
+    shell: invocation.shell,
     timeout: 10_000,
     windowsHide: true
   })

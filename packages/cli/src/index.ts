@@ -57,6 +57,7 @@ import { installShortcuts } from './ui/shortcuts'
 import { StepUi } from './ui/steps'
 import { symbols } from './ui/symbols'
 import { theme, themeStderr } from './ui/theme'
+import { installWarningFilter } from './warnings'
 
 interface StartOptions {
   cwd?: string
@@ -1248,6 +1249,7 @@ function findNumericArgument(argv: string[], name: string): number | undefined {
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<void> {
+  installWarningFilter()
   installExitReaper()
 
   if (argv.includes('--no-color')) {

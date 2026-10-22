@@ -1,7 +1,39 @@
 import { randomBytes } from 'node:crypto'
+import process from 'node:process'
 import { stripVTControlCharacters } from 'node:util'
 
 const RANDOM_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
+
+export interface SpawnCommand {
+  command: string
+  args: string[]
+  /** Windows `.cmd`/`.bat` shims (pnpm, npm, cloudflared) need cmd.exe to resolve. */
+  shell: boolean
+}
+
+function quoteWindowsArgument(value: string): string {
+  return /[\s"]/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value
+}
+
+/**
+ * Build a spawn() invocation for a command that may be a Windows shim.
+ *
+ * On Windows, running `pnpm` or a `cloudflared.cmd` shim requires a shell, so
+ * the command and its arguments are joined into one escaped string. Passing a
+ * separate `args` array together with `shell: true` triggers Node's DEP0190
+ * warning (and is unsafe, since the args would not be escaped).
+ */
+export function shellInvocation(command: string, args: readonly string[] = []): SpawnCommand {
+  if (process.platform !== 'win32') {
+    return { command, args: [...args], shell: false }
+  }
+
+  return {
+    command: [command, ...args].map(quoteWindowsArgument).join(' '),
+    args: [],
+    shell: true
+  }
+}
 
 export function stripAnsi(input: string): string {
   return stripVTControlCharacters(input)

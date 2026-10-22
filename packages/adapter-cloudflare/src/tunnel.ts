@@ -13,18 +13,11 @@ import type { CloudflareTunnel as CloudflareTunnelResource } from './api'
 import { spawn, spawnSync } from 'node:child_process'
 import process from 'node:process'
 import { AdapterError } from '@flash-tunnel/types'
-import { sleep, stripAnsi } from '@flash-tunnel/utils'
+import { shellInvocation, sleep, stripAnsi } from '@flash-tunnel/utils'
 import { CloudflareApi } from './api'
 
 const ADAPTER_ID = 'cloudflare'
 const QUICK_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
-
-function shellCommand(path: string): string {
-  if (process.platform === 'win32' && /\s/.test(path) && !path.startsWith('"')) {
-    return `"${path}"`
-  }
-  return path
-}
 
 export interface CloudflareTunnelOptions {
   cloudflaredPath?: string
@@ -82,9 +75,10 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
   }
 
   function ensureCloudflared(): string {
-    const check = spawnSync(shellCommand(cloudflaredPath), ['--version'], {
+    const invocation = shellInvocation(cloudflaredPath, ['--version'])
+    const check = spawnSync(invocation.command, invocation.args, {
       encoding: 'utf8',
-      shell: process.platform === 'win32',
+      shell: invocation.shell,
       timeout: 10_000,
       windowsHide: true
     })
@@ -256,8 +250,9 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
         ? ['--no-autoupdate', 'tunnel', 'run']
         : ['--no-autoupdate', 'tunnel', '--url', localUrl]
 
-      const child = spawn(shellCommand(cloudflaredPath), args, {
-        shell: process.platform === 'win32',
+      const invocation = shellInvocation(cloudflaredPath, args)
+      const child = spawn(invocation.command, invocation.args, {
+        shell: invocation.shell,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: process.platform !== 'win32',

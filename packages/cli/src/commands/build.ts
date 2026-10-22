@@ -5,6 +5,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 import { FlashTunnelError } from '@flash-tunnel/core'
+import { shellInvocation } from '@flash-tunnel/utils'
 import { theme } from '../ui/theme'
 
 export function packageManagerFor(cwd: string): string {
@@ -49,10 +50,11 @@ export function runBuildScript(cwd: string, reporter: Reporter): void {
   const manager = packageManagerFor(cwd)
   reporter.log(`${theme.dim('build')} ${manager} run build\n`)
 
-  const result = spawnSync(manager, ['run', 'build'], {
+  const invocation = shellInvocation(manager, ['run', 'build'])
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
+    shell: invocation.shell,
     windowsHide: true,
     env: { ...process.env, FLASH_TUNNEL: '1' }
   })

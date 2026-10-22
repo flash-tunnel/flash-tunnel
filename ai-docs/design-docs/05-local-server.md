@@ -64,7 +64,7 @@ CLI 的 `--command`、`--url`、`--static [dir]`、`--attach` 分别对应上述
 | npm | `npm run <script>` |
 | bun | `bun run <script>` |
 
-Windows 上 spawn `.cmd` 需要 `shell: true`（或 `cross-spawn` 语义），否则 `ENOENT`。
+Windows 上 spawn `.cmd` 需要 `shell: true`（或 `cross-spawn` 语义），否则 `ENOENT`。这类调用统一走 `@flash-tunnel/utils` 的 `shellInvocation()`：Windows 下把命令与参数拼成一条转义后的命令行，避免 `shell: true` + `args` 数组触发 Node 的 DEP0190 警告。
 
 ### 框架默认端口
 
