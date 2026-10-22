@@ -36,6 +36,19 @@ describe('cloudflareTunnel (quick mode)', () => {
     })
   })
 
+  it('rejects a tunnel target that carries a path', async () => {
+    const { directory, binary } = await createFakeCloudflared()
+    const adapter = createCloudflareTunnel({ cloudflaredPath: binary })
+    const ctx = createContext(directory)
+
+    await expect(adapter.provision(ctx, {
+      name: 'bad-target',
+      localUrl: 'http://127.0.0.1:3030/__mcp'
+    })).rejects.toMatchObject({
+      code: 'INVALID_LOCAL_URL'
+    })
+  })
+
   it('requires a token for named mode', async () => {
     const { directory, binary } = await createFakeCloudflared()
     const adapter = createCloudflareTunnel({ cloudflaredPath: binary })

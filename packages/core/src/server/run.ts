@@ -6,7 +6,10 @@ import process from 'node:process'
 import { sleep, stripAnsi } from '@flash-tunnel/utils'
 import { startStaticServer } from './static'
 
-const URL_PATTERN = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:\/\S*)?/
+// Only the origin is useful: cloudflared proxies to a host/port and keeps the
+// request path, so a path printed by the dev server (Slidev prints /__mcp last)
+// must not become part of the tunnel target.
+const URL_PATTERN = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?/
 const OUTPUT_LIMIT = 200
 
 function normalizeUrl(raw: string): string {

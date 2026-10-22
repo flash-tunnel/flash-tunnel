@@ -19,6 +19,31 @@ import { CloudflareApi } from './api'
 const ADAPTER_ID = 'cloudflare'
 const QUICK_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/
 
+/**
+ * cloudflared keeps the eyeball request path, so an ingress target with a path
+ * (for example Slidev's /__mcp) is rejected at runtime with "Bad Configuration".
+ * Fail early with an actionable message instead.
+ */
+function assertTunnelTarget(localUrl: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(localUrl)
+  }
+  catch {
+    throw new AdapterError(`Invalid tunnel target "${localUrl}"`, {
+      code: 'INVALID_LOCAL_URL',
+      hint: 'Pass a full http(s) URL such as http://127.0.0.1:5173'
+    })
+  }
+
+  if (parsed.pathname !== '/' || parsed.search) {
+    throw new AdapterError(`Tunnel target must be an origin without a path, got "${localUrl}"`, {
+      code: 'INVALID_LOCAL_URL',
+      hint: 'cloudflared keeps the incoming path, so only the origin can be proxied. Use http://host:port and put the path on the public URL instead'
+    })
+  }
+}
+
 export interface CloudflareTunnelOptions {
   cloudflaredPath?: string
   accountId?: string
@@ -165,6 +190,7 @@ export function createCloudflareTunnel(options: CloudflareTunnelOptions = {}): T
 
     async provision(_ctx: AdapterContext, spec: TunnelProvisionSpec): Promise<TunnelHandle> {
       reset()
+      assertTunnelTarget(spec.localUrl)
 
       if (plannedMode === 'quick') {
         return {
