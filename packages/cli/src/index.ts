@@ -490,6 +490,44 @@ function buildEffectiveConfig(
   }
 }
 
+interface DetectedServer {
+  command?: string
+  port?: number
+  dir?: string
+  url?: string
+  mode?: string
+  framework?: string
+  reason?: string
+}
+
+/** Detect the dev server once, for both the first attempt and the workspace retry. */
+function detectPreviewServer(
+  cwd: string,
+  server: ResolvedConfig['values']['server'],
+  options: StartOptions
+): DetectedServer {
+  const plan = detectServer(cwd, {
+    cwd: server.cwd,
+    command: server.command,
+    port: server.port,
+    url: server.url,
+    dir: server.dir,
+    timeout: server.timeout
+  }, {
+    forceDev: options.dev,
+    forceStatic: options.static !== undefined
+  })
+
+  return {
+    command: plan.command,
+    port: plan.port,
+    dir: plan.mode === 'static' ? plan.dir : undefined,
+    mode: plan.mode,
+    framework: plan.framework,
+    reason: plan.reason
+  }
+}
+
 async function startPreview(options: StartOptions, reporter: Reporter): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
 
@@ -587,36 +625,10 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     }
   }
 
-  let detected: {
-    command?: string
-    port?: number
-    dir?: string
-    url?: string
-    mode?: string
-    framework?: string
-    reason?: string
-  } | undefined
+  let detected: DetectedServer | undefined
   let detectionError: unknown
   try {
-    const plan = detectServer(cwd, {
-      cwd: preliminary.values.server.cwd,
-      command: preliminary.values.server.command,
-      port: preliminary.values.server.port,
-      url: preliminary.values.server.url,
-      dir: preliminary.values.server.dir,
-      timeout: preliminary.values.server.timeout
-    }, {
-      forceDev: options.dev,
-      forceStatic: options.static !== undefined
-    })
-    detected = {
-      command: plan.command,
-      port: plan.port,
-      dir: plan.mode === 'static' ? plan.dir : undefined,
-      mode: plan.mode,
-      framework: plan.framework,
-      reason: plan.reason
-    }
+    detected = detectPreviewServer(cwd, preliminary.values.server, options)
   }
   catch (error) {
     detectionError = error
@@ -638,25 +650,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
         preliminary = resolveConfig({ cwd, config, configFile: source, cli: cliConfig })
 
         try {
-          const plan = detectServer(cwd, {
-            cwd: preliminary.values.server.cwd,
-            command: preliminary.values.server.command,
-            port: preliminary.values.server.port,
-            url: preliminary.values.server.url,
-            dir: preliminary.values.server.dir,
-            timeout: preliminary.values.server.timeout
-          }, {
-            forceDev: options.dev,
-            forceStatic: options.static !== undefined
-          })
-          detected = {
-            command: plan.command,
-            port: plan.port,
-            dir: plan.mode === 'static' ? plan.dir : undefined,
-            mode: plan.mode,
-            framework: plan.framework,
-            reason: plan.reason
-          }
+          detected = detectPreviewServer(cwd, preliminary.values.server, options)
           detectionError = undefined
         }
         catch (retryError) {
