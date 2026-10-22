@@ -71,6 +71,15 @@ function detectPackageManager(cwd: string, pkg: PackageJson | undefined): Packag
   return 'npm'
 }
 
+/**
+ * Package manager for a directory, preferring the `packageManager` field and
+ * falling back to lockfiles. Detection and `--build` share it so they never
+ * spawn different managers for the same project.
+ */
+export function packageManagerFor(cwd: string): PackageManager {
+  return detectPackageManager(cwd, readPackageJson(cwd))
+}
+
 function detectFramework(pkg: PackageJson | undefined): FrameworkDefinition | undefined {
   if (!pkg) {
     return undefined

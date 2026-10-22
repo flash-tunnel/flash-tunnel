@@ -4,7 +4,7 @@ export {
   VITE_ALLOWED_HOSTS_ENV,
   viteAllowedHostsEnv
 } from './allowed-hosts'
-export { detectServer } from './detect'
+export { detectServer, packageManagerFor } from './detect'
 export type { DetectServerOptions } from './detect'
 export { startServer } from './run'
 export { startStaticServer } from './static'

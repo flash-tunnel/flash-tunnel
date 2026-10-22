@@ -4,19 +4,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
-import { FlashTunnelError } from '@flash-tunnel/core'
+import { FlashTunnelError, packageManagerFor } from '@flash-tunnel/core'
 import { shellInvocation } from '@flash-tunnel/utils'
 import { theme } from '../ui/theme'
 
-export function packageManagerFor(cwd: string): string {
-  const candidates: Array<[string, string]> = [
-    ['pnpm-lock.yaml', 'pnpm'],
-    ['yarn.lock', 'yarn'],
-    ['bun.lockb', 'bun'],
-    ['package-lock.json', 'npm']
-  ]
-  return candidates.find(([lockfile]) => existsSync(join(cwd, lockfile)))?.[1] ?? 'npm'
-}
+export { packageManagerFor }
 
 export function runBuildScript(cwd: string, reporter: Reporter): void {
   const packageJson = join(cwd, 'package.json')
