@@ -125,7 +125,8 @@ async function startCommandServer(plan: ServerPlan, options: StartServerOptions)
     windowsHide: true,
     env: {
       ...process.env,
-      FLASH_TUNNEL: '1'
+      FLASH_TUNNEL: '1',
+      ...options.env
     }
   })
 

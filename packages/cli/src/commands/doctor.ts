@@ -258,7 +258,7 @@ export async function collectDoctorChecks(options: DoctorOptions = {}): Promise<
         id: 'framework',
         level: 'info',
         message: 'Vite detected',
-        hint: 'If the public URL returns 403, add the hostname to server.allowedHosts'
+        hint: 'Tunnel hostnames are allowed automatically on Vite 6.1+; older versions need the hostname in server.allowedHosts'
       })
     }
     else if (plan.framework === 'next') {

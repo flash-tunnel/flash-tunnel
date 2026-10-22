@@ -85,6 +85,35 @@ describe('startServer', () => {
     expect(await (await fetch(handle.url)).text()).toBe('ok')
   })
 
+  it('passes extra environment variables to the command', async () => {
+    const cwd = await createDirectory({
+      'env.mjs': `
+        import { createServer } from 'node:http'
+        const value = process.env.FLASH_TUNNEL_TEST_VALUE ?? 'missing'
+        const server = createServer((request, response) => response.end(value))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+
+    const handle = await startServer({
+      mode: 'command',
+      cwd,
+      command: 'node env.mjs',
+      framework: 'unknown',
+      port: 3000,
+      reason: 'test',
+      confidence: 'high'
+    }, {
+      timeoutMs: 10_000,
+      env: { FLASH_TUNNEL_TEST_VALUE: 'injected' }
+    })
+    handles.push(handle)
+
+    expect(await (await fetch(handle.url)).text()).toBe('injected')
+  })
+
   it('serves a static directory with spa fallback', async () => {
     const cwd = await createDirectory({
       'dist/index.html': '<h1>preview</h1>'

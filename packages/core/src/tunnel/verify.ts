@@ -1,5 +1,21 @@
 import { sleep } from '@flash-tunnel/utils'
 
+/**
+ * The local dev server answered, but refused the tunnel hostname. Vite returns
+ * this page when the Host header is not covered by `server.allowedHosts`.
+ */
+export class PublicHostBlockedError extends Error {
+  readonly host: string
+
+  constructor(host: string) {
+    super(`The dev server blocked the tunnel hostname "${host}"`)
+    this.name = 'PublicHostBlockedError'
+    this.host = host
+  }
+}
+
+const VITE_BLOCKED_HOST_PATTERN = /Blocked request\. This host \("([^"]+)"\) is not allowed/
+
 export interface VerifyPublicUrlOptions {
   timeoutMs?: number
   intervalMs?: number
@@ -44,6 +60,12 @@ async function dnsDiagnostic(hostname: string): Promise<string | undefined> {
   }
 }
 
+async function detectBlockedHost(response: Response): Promise<PublicHostBlockedError | undefined> {
+  const body = await response.text().catch(() => '')
+  const match = VITE_BLOCKED_HOST_PATTERN.exec(body)
+  return match?.[1] ? new PublicHostBlockedError(match[1]) : undefined
+}
+
 export async function verifyPublicUrl(
   url: string,
   options: VerifyPublicUrlOptions = {}
@@ -61,12 +83,22 @@ export async function verifyPublicUrl(
       })
 
       if (response.status < 500) {
+        if (response.status === 403) {
+          const blocked = await detectBlockedHost(response)
+          if (blocked) {
+            throw blocked
+          }
+        }
+
         return { status: response.status, url }
       }
 
       lastError = new Error(`HTTP ${response.status}`)
     }
     catch (error) {
+      if (error instanceof PublicHostBlockedError) {
+        throw error
+      }
       lastError = error
     }
 

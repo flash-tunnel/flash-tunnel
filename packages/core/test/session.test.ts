@@ -201,6 +201,66 @@ describe('startPreviewSession', () => {
     await expect(fetch(session.localUrl)).rejects.toThrow()
   })
 
+  it('lets the dev server accept the quick tunnel hostname', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const allowed = process.env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS ?? 'missing'
+        const server = createServer((request, response) => response.end(allowed))
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+
+    const session = await startPreviewSession({
+      cwd,
+      config: {
+        server: {
+          command: 'node server.mjs',
+          port: 0
+        }
+      },
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick',
+      verifyTimeoutMs: 10_000
+    })
+    sessions.push(session)
+
+    expect(await (await fetch(session.publicUrl)).text()).toBe('.trycloudflare.com')
+  })
+
+  it('fails clearly when the dev server blocks the tunnel hostname', async () => {
+    const cwd = await createDirectory({
+      'server.mjs': `
+        import { createServer } from 'node:http'
+        const server = createServer((request, response) => {
+          response.writeHead(403, { 'Content-Type': 'text/plain' })
+          response.end('Blocked request. This host ("ft-test.trycloudflare.com") is not allowed.')
+        })
+        server.listen(0, '127.0.0.1', () => {
+          console.log('Local: http://127.0.0.1:' + server.address().port)
+        })
+      `
+    })
+
+    await expect(startPreviewSession({
+      cwd,
+      config: {
+        server: {
+          command: 'node server.mjs',
+          port: 0
+        }
+      },
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick',
+      verifyTimeoutMs: 10_000
+    })).rejects.toMatchObject({
+      code: 'PUBLIC_HOST_BLOCKED',
+      hint: expect.stringContaining('Vite 6.1 or newer')
+    })
+  })
+
   it('creates the dns record before start and removes it before deprovision', async () => {
     const cwd = await createDirectory({
       'server.mjs': `

@@ -83,6 +83,17 @@ Windows 上 spawn `.cmd` 需要 `shell: true`（或 `cross-spawn` 语义），�
 
 端口表只用于「没解析到输出时的兜底」，不能替代输出解析：Vite 在 5173 被占时会用 5174。
 
+### Vite 的 Host 校验
+
+Vite 6.0.9+ 默认拒绝非 `localhost`、IP、`.localhost` 的 Host（防 DNS rebinding），隧道域名会收到 `Blocked request. This host ... is not allowed.`。
+
+flash-tunnel 启动 dev server 时自动注入 `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`：
+
+- named 模式 → 固定的隧道 hostname；
+- quick 模式 → `.trycloudflare.com`（Vite 的 `.` 前缀表示该域及全部子域）。
+
+该变量由 Vite 6.1 起支持（6.1–8.0 只接受单个 host，8.1 起才支持逗号分隔）；`vite preview` 继承 `server.allowedHosts`，同样生效。用户显式设置该变量时不覆盖。Vite < 6.1 无法自动放行，公网探测到 Vite 拦截页时会报 `PUBLIC_HOST_BLOCKED`，并提示把 hostname 写进 `server.allowedHosts`。
+
 ## 端口与地址解析
 
 优先级：

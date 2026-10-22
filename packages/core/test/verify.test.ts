@@ -14,6 +14,21 @@ describe('verifyPublicUrl', () => {
       .toMatchObject({ status: 403 })
   })
 
+  it('rejects a request blocked by the Vite host check', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      'Blocked request. This host ("ft-abc.trycloudflare.com") is not allowed.\n'
+      + 'To allow this host, add "ft-abc.trycloudflare.com" to `server.allowedHosts` in vite.config.js.',
+      { status: 403 }
+    )))
+
+    await expect(verifyPublicUrl('https://ft-abc.trycloudflare.com', { timeoutMs: 1000 }))
+      .rejects
+      .toMatchObject({
+        name: 'PublicHostBlockedError',
+        host: 'ft-abc.trycloudflare.com'
+      })
+  })
+
   it('retries 5xx responses until the timeout', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('bad', { status: 503 })))
 

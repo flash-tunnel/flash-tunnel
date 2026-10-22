@@ -19,6 +19,7 @@ import { randomId, sleep, slugify } from '@flash-tunnel/utils'
 import { FlashTunnelError } from '../errors'
 import { Emitter } from '../events'
 import { createSessionLog, pruneSessionLogs } from '../logs'
+import { VITE_ALLOWED_HOSTS_ENV, viteAllowedHostsEnv } from '../server/allowed-hosts'
 import { detectServer } from '../server/detect'
 import { startServer } from '../server/run'
 import {
@@ -27,7 +28,7 @@ import {
   removeSessionState,
   writeSessionState
 } from '../state/store'
-import { verifyPublicUrl } from '../tunnel/verify'
+import { PublicHostBlockedError, verifyPublicUrl } from '../tunnel/verify'
 import { CORE_API_VERSION, createSessionId } from './id'
 import { ResourceLedger } from './ledger'
 
@@ -276,6 +277,8 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     server = await startServer(plan, {
       timeoutMs: config.server?.timeout,
       signal: options.signal,
+      // Let Vite accept the tunnel hostname without touching vite.config.
+      env: viteAllowedHostsEnv(mode, options.hostname),
       onLog: (line, stream) => {
         options.onLog?.(line, stream)
         serverLog?.write(line)
@@ -649,6 +652,19 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
       })
     }
     catch (error) {
+      if (error instanceof PublicHostBlockedError) {
+        const hint = server.startedByUs
+          ? `flash-tunnel passes ${VITE_ALLOWED_HOSTS_ENV} to the dev server automatically, which requires Vite 6.1 or newer. On older Vite add "${error.host}" to server.allowedHosts in vite.config.`
+          : `The dev server was not started by flash-tunnel, so the tunnel hostname could not be injected. Add "${error.host}" to server.allowedHosts in vite.config, or let flash-tunnel start the dev server.`
+
+        throw new FlashTunnelError(error.message, {
+          code: 'PUBLIC_HOST_BLOCKED',
+          exitCode: 7,
+          hint,
+          cause: error
+        })
+      }
+
       throw new FlashTunnelError(
         `The public URL did not answer: ${errorMessage(error)}`,
         { code: 'PUBLIC_VERIFY_FAILED', exitCode: 7, hint: 'Check cloudflared connectivity and try again', cause: error }

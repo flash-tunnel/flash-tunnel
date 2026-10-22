@@ -43,4 +43,6 @@ export interface StartServerOptions {
   timeoutMs?: number
   signal?: AbortSignal
   onLog?: (line: string, stream: 'stdout' | 'stderr') => void
+  /** Extra environment for the spawned dev server, merged over process.env. */
+  env?: NodeJS.ProcessEnv
 }
