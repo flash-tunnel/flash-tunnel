@@ -82,14 +82,12 @@ interface StartOptions {
   verbose?: boolean
   keep?: boolean
   autoStop?: string
-  noSweep?: boolean
   sweep?: boolean
   json?: boolean
   silent?: boolean
   readyFile?: string
   onReady?: string
   open?: boolean
-  noOpen?: boolean
   spinner?: boolean
   yes?: boolean
 }
@@ -581,7 +579,7 @@ async function createPreviewPlan(
     reporter.log(`${theme.dim('config')} ${source}\n`)
   }
 
-  if (!options.dryRun && !options.noSweep && options.sweep !== false) {
+  if (!options.dryRun && options.sweep !== false) {
     await sweepStale(cwd, reporter).catch((error) => {
       reporter.warn(`sweep failed: ${errorMessage(error)}`)
     })
@@ -599,8 +597,6 @@ async function createPreviewPlan(
     url: options.url,
     static: options.static === true ? true : typeof options.static === 'string' ? options.static : undefined,
     attach: options.attach,
-    dev: options.dev,
-    overwrite: options.overwrite,
     allowMultilevel: options.allowMultilevel,
     autoStop: options.autoStop
   }
@@ -889,6 +885,7 @@ async function runPreviewSession(
     process.off('SIGINT', onEarlySignal)
     process.off('SIGTERM', onEarlySignal)
     process.off('SIGHUP', onEarlySignal)
+    steps.stop()
 
     if (interrupted) {
       process.exitCode = interrupted === 'SIGINT' ? 130 : 143
@@ -932,6 +929,7 @@ async function runPreviewSession(
   }
   finally {
     disposeShortcuts()
+    steps.stop()
   }
 
   applyStopOutcome(outcome, reporter)
@@ -1082,7 +1080,6 @@ async function reportSessionReady(
 
   if (
     options.open
-    && !options.noOpen
     && !reporter.json
     && process.stdout.isTTY
     && !process.env.CI

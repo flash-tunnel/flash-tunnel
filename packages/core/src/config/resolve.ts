@@ -63,8 +63,6 @@ export interface ResolveConfigInput {
     url?: string
     static?: string | true
     attach?: boolean
-    dev?: boolean
-    overwrite?: boolean
     allowMultilevel?: boolean
     autoStop?: string
     sessionId?: string

@@ -30,7 +30,6 @@ export class Reporter {
   private readonly cwd: string
   private readonly readyFile?: string
   private readonly onReady?: string
-  private readyPayload?: ReadyPayload
 
   constructor(options: ReporterOptions = {}) {
     this.json = options.json ?? false
@@ -70,7 +69,6 @@ export class Reporter {
   }
 
   async ready(payload: ReadyPayload): Promise<void> {
-    this.readyPayload = payload
     this.event({ ...payload })
 
     if (this.readyFile) {
@@ -105,10 +103,6 @@ export class Reporter {
     if (hint) {
       process.stderr.write(`  ${themeStderr.dim('hint')} ${hint}\n`)
     }
-  }
-
-  get readyInfo(): ReadyPayload | undefined {
-    return this.readyPayload
   }
 
   exit(code: number): void {
