@@ -8,6 +8,8 @@ import type {
   SessionState
 } from '@flash-tunnel/core'
 import type { AdapterContext, FlashTunnelEvents } from '@flash-tunnel/types'
+import type { Command } from 'cac'
+import type { ReporterOptions } from './ui/reporter'
 import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -1147,14 +1149,17 @@ function reportError(error: unknown, reporter: Reporter): void {
   process.exitCode = exitCodeFor(error)
 }
 
-async function runStart(options: StartOptions = {}): Promise<void> {
+async function runCommand(
+  options: ReporterOptions,
+  work: (reporter: Reporter) => Promise<void>
+): Promise<void> {
   const reporter = new Reporter({
     ...options,
     cwd: resolve(options.cwd ?? process.cwd())
   })
 
   try {
-    await startPreview(options, reporter)
+    await work(reporter)
   }
   catch (error) {
     reportError(error, reporter)
@@ -1164,56 +1169,59 @@ async function runStart(options: StartOptions = {}): Promise<void> {
   }
 }
 
-async function runCleanCommand(options: CleanOptions = {}): Promise<void> {
-  const reporter = new Reporter({ ...options })
-
-  try {
-    await runClean(options, reporter)
-  }
-  catch (error) {
-    reportError(error, reporter)
-  }
-  finally {
-    reporter.exit(Number(process.exitCode ?? 0))
-  }
+function runStart(options: StartOptions = {}): Promise<void> {
+  return runCommand(options, reporter => startPreview(options, reporter))
 }
 
-async function runInitCommand(options: InitCommandOptions = {}): Promise<void> {
-  const reporter = new Reporter({
-    ...options,
-    cwd: resolve(options.cwd ?? process.cwd())
-  })
-
-  try {
-    await runInit(options, reporter)
-  }
-  catch (error) {
-    reportError(error, reporter)
-  }
-  finally {
-    reporter.exit(Number(process.exitCode ?? 0))
-  }
+function runCleanCommand(options: CleanOptions = {}): Promise<void> {
+  return runCommand(options, reporter => runClean(options, reporter))
 }
 
-async function runDoctorCommand(options: DoctorCommandOptions = {}): Promise<void> {
-  const reporter = new Reporter({
-    ...options,
-    cwd: resolve(options.cwd ?? process.cwd())
-  })
+function runInitCommand(options: InitCommandOptions = {}): Promise<void> {
+  return runCommand(options, reporter => runInit(options, reporter))
+}
 
-  try {
-    await runDoctor(options, reporter)
-  }
-  catch (error) {
-    reportError(error, reporter)
-  }
-  finally {
-    reporter.exit(Number(process.exitCode ?? 0))
-  }
+function runDoctorCommand(options: DoctorCommandOptions = {}): Promise<void> {
+  return runCommand(options, reporter => runDoctor(options, reporter))
 }
 
 function runProvidersCommand(options: { json?: boolean, silent?: boolean } = {}): void {
   runProviders(new Reporter(options))
+}
+
+/** Flags shared by `flash-tunnel` and `flash-tunnel start`. */
+function withStartOptions(command: Command): Command {
+  return command
+    .option('--cwd <dir>', 'Project directory')
+    .option('--config <path>', 'Path to flash-tunnel.ts')
+    .option('--port <port>', 'Preferred local port')
+    .option('--command <command>', 'Command used to start the local server')
+    .option('--url <url>', 'Reuse an already running server')
+    .option('--attach', 'Only attach; requires --url')
+    .option('--static [dir]', 'Serve a static directory')
+    .option('--dev', 'Force the dev script')
+    .option('--build', 'Run the build script before starting')
+    .option('--reuse', 'Reuse a server already listening on the port')
+    .option('--mode <mode>', 'Tunnel mode: quick or named')
+    .option('--zone <domain>', 'Cloudflare zone')
+    .option('--hostname <fqdn>', 'Full public hostname')
+    .option('--subdomain <label>', 'Subdomain label or template')
+    .option('--allow-multilevel', 'Allow multi-level subdomains')
+    .option('--overwrite', 'Replace DNS records not created by this tool')
+    .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
+    .option('--keep', 'Keep DNS and tunnel after exit')
+    .option('--no-sweep', 'Do not scan for leftover sessions at startup')
+    .option('--verbose', 'Stream dev server and cloudflared logs')
+    .option('--json', 'Machine-readable NDJSON on stdout')
+    .option('--silent', 'Only print errors')
+    .option('--dry-run', 'Print the effective configuration and exit')
+    .option('--ready-file <path>', 'Write the ready payload to a file')
+    .option('--on-ready <command>', 'Run a command once the preview is ready')
+    .option('--open', 'Open the preview in a browser')
+    .option('--no-open', 'Do not open the preview in a browser (default)')
+    .option('--no-color', 'Disable colors')
+    .option('--no-spinner', 'Disable the spinner')
+    .option('-y, --yes', 'Disable prompts and use defaults')
 }
 
 async function runReapCommand(sessionId: string, force: boolean, waitPid?: number): Promise<void> {
@@ -1273,72 +1281,10 @@ export async function runCli(argv: string[] = process.argv): Promise<void> {
 
   const cli = cac('flash-tunnel')
 
-  cli
-    .command('[root]', 'Start a temporary public preview')
-    .option('--cwd <dir>', 'Project directory')
-    .option('--config <path>', 'Path to flash-tunnel.ts')
-    .option('--port <port>', 'Preferred local port')
-    .option('--command <command>', 'Command used to start the local server')
-    .option('--url <url>', 'Reuse an already running server')
-    .option('--attach', 'Only attach; requires --url')
-    .option('--static [dir]', 'Serve a static directory')
-    .option('--dev', 'Force the dev script')
-    .option('--build', 'Run the build script before starting')
-    .option('--reuse', 'Reuse a server already listening on the port')
-    .option('--mode <mode>', 'Tunnel mode: quick or named')
-    .option('--zone <domain>', 'Cloudflare zone')
-    .option('--hostname <fqdn>', 'Full public hostname')
-    .option('--subdomain <label>', 'Subdomain label or template')
-    .option('--allow-multilevel', 'Allow multi-level subdomains')
-    .option('--overwrite', 'Replace DNS records not created by this tool')
-    .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
-    .option('--keep', 'Keep DNS and tunnel after exit')
-    .option('--no-sweep', 'Do not scan for leftover sessions at startup')
-    .option('--verbose', 'Stream dev server and cloudflared logs')
-    .option('--json', 'Machine-readable NDJSON on stdout')
-    .option('--silent', 'Only print errors')
-    .option('--dry-run', 'Print the effective configuration and exit')
-    .option('--ready-file <path>', 'Write the ready payload to a file')
-    .option('--on-ready <command>', 'Run a command once the preview is ready')
-    .option('--open', 'Open the preview in a browser')
-    .option('--no-open', 'Do not open the preview in a browser (default)')
-    .option('--no-color', 'Disable colors')
-    .option('--no-spinner', 'Disable the spinner')
-    .option('-y, --yes', 'Disable prompts and use defaults')
+  withStartOptions(cli.command('[root]', 'Start a temporary public preview'))
     .action((_root: unknown, options: StartOptions = {}) => runStart(options))
 
-  cli
-    .command('start', 'Start a temporary public preview')
-    .option('--cwd <dir>', 'Project directory')
-    .option('--config <path>', 'Path to flash-tunnel.ts')
-    .option('--port <port>', 'Preferred local port')
-    .option('--command <command>', 'Command used to start the local server')
-    .option('--url <url>', 'Reuse an already running server')
-    .option('--attach', 'Only attach; requires --url')
-    .option('--static [dir]', 'Serve a static directory')
-    .option('--dev', 'Force the dev script')
-    .option('--build', 'Run the build script before starting')
-    .option('--reuse', 'Reuse a server already listening on the port')
-    .option('--mode <mode>', 'Tunnel mode: quick or named')
-    .option('--zone <domain>', 'Cloudflare zone')
-    .option('--hostname <fqdn>', 'Full public hostname')
-    .option('--subdomain <label>', 'Subdomain label or template')
-    .option('--allow-multilevel', 'Allow multi-level subdomains')
-    .option('--overwrite', 'Replace DNS records not created by this tool')
-    .option('--auto-stop <duration>', 'Stop and clean up after a duration, e.g. 2h')
-    .option('--keep', 'Keep DNS and tunnel after exit')
-    .option('--no-sweep', 'Do not scan for leftover sessions at startup')
-    .option('--verbose', 'Stream dev server and cloudflared logs')
-    .option('--json', 'Machine-readable NDJSON on stdout')
-    .option('--silent', 'Only print errors')
-    .option('--dry-run', 'Print the effective configuration and exit')
-    .option('--ready-file <path>', 'Write the ready payload to a file')
-    .option('--on-ready <command>', 'Run a command once the preview is ready')
-    .option('--open', 'Open the preview in a browser')
-    .option('--no-open', 'Do not open the preview in a browser (default)')
-    .option('--no-color', 'Disable colors')
-    .option('--no-spinner', 'Disable the spinner')
-    .option('-y, --yes', 'Disable prompts and use defaults')
+  withStartOptions(cli.command('start', 'Start a temporary public preview'))
     .action((options: StartOptions = {}) => runStart(options))
 
   cli
