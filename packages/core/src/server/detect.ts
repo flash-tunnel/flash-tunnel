@@ -86,6 +86,14 @@ function detectFramework(pkg: PackageJson | undefined): FrameworkDefinition | un
   )
 }
 
+function findIndexDirectory(cwd: string): string | undefined {
+  return BUILD_DIRECTORIES.find((directory) => {
+    const index = join(cwd, directory, 'index.html')
+    // throwIfNoEntry keeps a file that disappears between calls from crashing detection.
+    return statSync(index, { throwIfNoEntry: false })?.isFile() ?? false
+  })
+}
+
 function hasBuildOutput(cwd: string, framework: Framework): boolean {
   if (framework === 'next') {
     return existsSync(join(cwd, '.next'))
@@ -95,17 +103,7 @@ function hasBuildOutput(cwd: string, framework: Framework): boolean {
     return existsSync(join(cwd, '.output')) || existsSync(join(cwd, '.nuxt'))
   }
 
-  return BUILD_DIRECTORIES.some((directory) => {
-    const index = join(cwd, directory, 'index.html')
-    return existsSync(index) && statSync(index).isFile()
-  })
-}
-
-function findStaticDirectory(cwd: string): string | undefined {
-  return BUILD_DIRECTORIES.find((directory) => {
-    const index = join(cwd, directory, 'index.html')
-    return existsSync(index) && statSync(index).isFile()
-  })
+  return findIndexDirectory(cwd) !== undefined
 }
 
 function parsePortFromScript(script: string | undefined): number | undefined {
@@ -131,6 +129,24 @@ function parsePortFromScript(script: string | undefined): number | undefined {
 
 function createCommand(manager: PackageManager, script: string): string {
   return `${manager} run ${script}`
+}
+
+function staticPlan(
+  cwd: string,
+  dir: string,
+  port: number,
+  framework: Framework,
+  reason: string
+): ServerPlan {
+  return {
+    mode: 'static',
+    cwd,
+    dir,
+    framework,
+    port,
+    reason,
+    confidence: 'high'
+  }
 }
 
 export interface DetectServerOptions {
@@ -161,45 +177,43 @@ export function detectServer(
   }
 
   if (overrides.url) {
+    const url = new URL(overrides.url)
+    const defaultPort = url.protocol === 'https:' ? 443 : 80
     return {
       mode: 'attach',
       cwd: workingDirectory,
       url: overrides.url,
       framework: 'unknown',
-      port: overrides.port ?? Number(new URL(overrides.url).port || 80),
+      port: overrides.port ?? Number(url.port || defaultPort),
       reason: 'server.url is configured',
       confidence: 'high'
     }
   }
 
   if (overrides.dir) {
-    return {
-      mode: 'static',
-      cwd: workingDirectory,
-      dir: resolve(workingDirectory, overrides.dir),
-      framework: 'unknown',
-      port: overrides.port ?? 4173,
-      reason: 'server.dir is configured',
-      confidence: 'high'
-    }
+    return staticPlan(
+      workingDirectory,
+      resolve(workingDirectory, overrides.dir),
+      overrides.port ?? 4173,
+      'unknown',
+      'server.dir is configured'
+    )
   }
 
   if (options.forceStatic) {
-    const staticDirectory = findStaticDirectory(workingDirectory)
+    const staticDirectory = findIndexDirectory(workingDirectory)
     if (!staticDirectory) {
       throw new Error(
         'No static directory found. Build the project or pass --static <dir> with an index.html.'
       )
     }
-    return {
-      mode: 'static',
-      cwd: workingDirectory,
-      dir: join(workingDirectory, staticDirectory),
-      framework: 'unknown',
-      port: overrides.port ?? 4173,
-      reason: `static mode forced (${staticDirectory}/)`,
-      confidence: 'high'
-    }
+    return staticPlan(
+      workingDirectory,
+      join(workingDirectory, staticDirectory),
+      overrides.port ?? 4173,
+      'unknown',
+      `static mode forced (${staticDirectory}/)`
+    )
   }
 
   const pkg = readPackageJson(workingDirectory)
@@ -270,17 +284,15 @@ export function detectServer(
     }
   }
 
-  const staticDirectory = findStaticDirectory(workingDirectory)
+  const staticDirectory = findIndexDirectory(workingDirectory)
   if (staticDirectory) {
-    return {
-      mode: 'static',
-      cwd: workingDirectory,
-      dir: join(workingDirectory, staticDirectory),
+    return staticPlan(
+      workingDirectory,
+      join(workingDirectory, staticDirectory),
+      overrides.port ?? 4173,
       framework,
-      port: overrides.port ?? 4173,
-      reason: `static build output in ${staticDirectory}/`,
-      confidence: 'high'
-    }
+      `static build output in ${staticDirectory}/`
+    )
   }
 
   throw new Error(
