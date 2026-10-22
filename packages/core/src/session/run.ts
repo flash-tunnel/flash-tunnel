@@ -51,12 +51,12 @@ const CLEANUP_STEPS: Record<LedgerKind, { name: string, timeoutMs: number, attem
 }
 
 const ALLOWED_TRANSITIONS: Record<SessionPhase, readonly SessionPhase[]> = {
-  'starting': ['server-ready'],
-  'server-ready': ['provisioning-tunnel'],
-  'provisioning-tunnel': ['tunnel-provisioned'],
-  'tunnel-provisioned': ['dns-created', 'running'],
-  'dns-created': ['running'],
-  'running': [],
+  'starting': ['server-ready', 'tearing-down'],
+  'server-ready': ['provisioning-tunnel', 'tearing-down'],
+  'provisioning-tunnel': ['tunnel-provisioned', 'tearing-down'],
+  'tunnel-provisioned': ['dns-created', 'running', 'tearing-down'],
+  'dns-created': ['running', 'tearing-down'],
+  'running': ['tearing-down'],
   'tearing-down': [],
   'kept': [],
   'failed': []
@@ -271,6 +271,11 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     void pruneProjectState().catch(() => {})
   }
 
+  const closeLogs = async (): Promise<void> => {
+    await serverLog?.close()
+    await tunnelLog?.close()
+  }
+
   const serverStartedAt = Date.now()
   const plan = detectServer(cwd, config.server)
   emitStep('server', 'start')
@@ -289,6 +294,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   }
   catch (error) {
     emitStep('server', 'fail', errorMessage(error))
+    await closeLogs()
     await releaseProjectLock(cwd, sessionId).catch(() => {})
     if (state) {
       await removeSessionState(state).catch(() => {})
@@ -449,6 +455,62 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     return { failures, removed }
   }
 
+  /**
+   * Shared teardown tail for both the graceful path and a failed start: stop the
+   * timers, roll the ledger back, close the logs, report, persist and unlock. It
+   * must stay single-sourced so the two exit paths cannot drift apart.
+   */
+  const teardown = async (): Promise<{ failures: CleanupFailure[], removed: string[] }> => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = undefined
+    }
+    if (autoStopTimer) {
+      clearTimeout(autoStopTimer)
+      autoStopTimer = undefined
+    }
+
+    if (state) {
+      state.cleanup.inProgress = true
+      await transition('tearing-down')
+    }
+
+    const { failures, removed } = await cleanup()
+    await closeLogs()
+
+    events.emit('cleanup:done', {
+      ok: failures.length === 0,
+      removed,
+      failed: failures.map(failure => ({ kind: failure.step, error: failure.error }))
+    })
+
+    if (persist && state) {
+      if (failures.length > 0) {
+        state.cleanup.required = true
+        state.cleanup.attempts += 1
+        state.cleanup.inProgress = false
+        state.state = 'failed'
+        await saveState()
+      }
+      else if (options.keep) {
+        state.cleanup.kept = true
+        state.cleanup.inProgress = false
+        state.state = 'kept'
+        await saveState()
+      }
+      else {
+        await removeSessionState(state).catch(() => {})
+      }
+    }
+
+    if (lockAcquired) {
+      await releaseProjectLock(cwd, sessionId).catch(() => {})
+      lockAcquired = false
+    }
+
+    return { failures, removed }
+  }
+
   const stop = async (): Promise<void> => {
     if (stopPromise) {
       return stopPromise
@@ -456,58 +518,7 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
 
     stopping = true
     stopPromise = (async () => {
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer)
-        heartbeatTimer = undefined
-      }
-      if (autoStopTimer) {
-        clearTimeout(autoStopTimer)
-        autoStopTimer = undefined
-      }
-
-      if (state) {
-        state.state = 'tearing-down'
-        state.cleanup.inProgress = true
-        await saveState()
-        events.emit('state', { from: 'running', to: 'tearing-down' })
-      }
-
-      const { failures, removed } = await cleanup()
-      await serverLog?.close()
-      await tunnelLog?.close()
-
-      events.emit('cleanup:done', {
-        ok: failures.length === 0,
-        removed: options.keep
-          ? removed.filter(kind => kind !== 'dns.remove' && kind !== 'tunnel.deprovision')
-          : removed,
-        failed: failures.map(failure => ({ kind: failure.step, error: failure.error }))
-      })
-
-      if (persist && state) {
-        if (failures.length > 0) {
-          state.cleanup.required = true
-          state.cleanup.attempts += 1
-          state.cleanup.inProgress = false
-          state.state = 'failed'
-          await saveState()
-        }
-        else if (options.keep) {
-          state.cleanup.kept = true
-          state.cleanup.inProgress = false
-          state.state = 'kept'
-          await saveState()
-        }
-        else {
-          await removeSessionState(state).catch(() => {})
-        }
-      }
-
-      if (lockAcquired) {
-        await releaseProjectLock(cwd, sessionId).catch(() => {})
-        lockAcquired = false
-      }
-
+      const { failures } = await teardown()
       if (failures.length > 0) {
         throw new CleanupError(failures)
       }
@@ -727,43 +738,12 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     }
   }
   catch (error) {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer)
-    }
-    if (autoStopTimer) {
-      clearTimeout(autoStopTimer)
-    }
-
     if (activeStep) {
       emitStep(activeStep, 'fail', errorMessage(error))
     }
 
     stopping = true
-    const { failures } = await cleanup()
-    await serverLog?.close()
-    await tunnelLog?.close()
-
-    events.emit('cleanup:done', {
-      ok: failures.length === 0,
-      removed: [],
-      failed: failures.map(failure => ({ kind: failure.step, error: failure.error }))
-    })
-
-    if (persist && state) {
-      if (failures.length > 0) {
-        state.cleanup.required = true
-        state.cleanup.attempts += 1
-        state.state = 'failed'
-        await saveState()
-      }
-      else {
-        await removeSessionState(state).catch(() => {})
-      }
-      if (lockAcquired) {
-        await releaseProjectLock(cwd, sessionId).catch(() => {})
-        lockAcquired = false
-      }
-    }
+    await teardown()
 
     throw error
   }
