@@ -119,6 +119,28 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+type SourceCandidate<T> = readonly [value: T | undefined, source: ConfigSource, note?: string]
+
+interface PickedValue<T> {
+  value?: T
+  source?: ConfigSource
+  note?: string
+}
+
+/**
+ * First candidate that is present, together with where it came from. Keeping the
+ * value and its origin in one list stops the two from drifting apart, which is
+ * the main hazard of parallel `a ?? b ?? c` chains.
+ */
+function firstOf<T>(...candidates: SourceCandidate<T>[]): PickedValue<T> {
+  for (const [value, source, note] of candidates) {
+    if (value !== undefined) {
+      return { value, source, note }
+    }
+  }
+  return {}
+}
+
 function validateHostname(hostname: string): string {
   if (hostname.length > 253) {
     throw invalid(`Hostname is too long (${hostname.length} characters; maximum 253)`)
@@ -160,36 +182,41 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
 
   const project = slugify(basename(input.cwd))
 
-  const zoneCandidate = cli.zone
-    ?? optionalString(env.FLASH_TUNNEL_ZONE)
-    ?? optionalString(config.domain?.zone)
+  const zonePick = firstOf<string>(
+    [optionalString(cli.zone), 'cli'],
+    [optionalString(env.FLASH_TUNNEL_ZONE), 'env'],
+    [optionalString(config.domain?.zone), 'config']
+  )
   let zone: string | undefined
-  if (zoneCandidate) {
-    zone = validateZone(zoneCandidate)
-    setSource('domain.zone', cli.zone ? 'cli' : env.FLASH_TUNNEL_ZONE ? 'env' : 'config')
+  if (zonePick.value) {
+    zone = validateZone(zonePick.value)
+    setSource('domain.zone', zonePick.source ?? 'config')
   }
   else if (input.inferredZone) {
     zone = validateZone(input.inferredZone)
     setSource('domain.zone', 'inferred', 'the only active Cloudflare zone')
   }
 
-  const subdomain = cli.subdomain
-    ?? optionalString(config.domain?.subdomain)
-    ?? '{project}-{rand}'
+  const subdomainPick = firstOf<string>(
+    [optionalString(cli.subdomain), 'cli'],
+    [optionalString(config.domain?.subdomain), 'config']
+  )
+  const subdomain = subdomainPick.value ?? '{project}-{rand}'
   setSource(
     'domain.subdomain',
-    cli.subdomain ? 'cli' : config.domain?.subdomain ? 'config' : 'default',
-    config.domain?.subdomain || cli.subdomain ? undefined : 'default template'
+    subdomainPick.source ?? 'default',
+    subdomainPick.source ? undefined : 'default template'
   )
 
-  const explicitHostname = cli.hostname
-    ?? optionalString(env.FLASH_TUNNEL_HOSTNAME)
-    ?? undefined
+  const hostnamePick = firstOf<string>(
+    [optionalString(cli.hostname), 'cli'],
+    [optionalString(env.FLASH_TUNNEL_HOSTNAME), 'env']
+  )
 
   let hostname: string | undefined
-  if (explicitHostname) {
-    hostname = validateHostname(explicitHostname)
-    setSource('domain.hostname', cli.hostname ? 'cli' : 'env')
+  if (hostnamePick.value) {
+    hostname = validateHostname(hostnamePick.value)
+    setSource('domain.hostname', hostnamePick.source ?? 'env')
   }
   else if (zone) {
     try {
@@ -213,49 +240,53 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
   setSource('server.cwd', serverCwdValue ? 'config' : 'default')
 
   const staticValue = typeof cli.static === 'string' ? cli.static : undefined
-  const directoryValue = staticValue ?? optionalString(config.server?.dir)
-  let serverDir = directoryValue
-    ? isAbsolute(directoryValue) ? directoryValue : resolve(configDir, directoryValue)
-    : undefined
-  if (serverDir) {
-    setSource('server.dir', staticValue ? 'cli' : 'config')
-  }
-  else if (input.detected?.dir) {
-    serverDir = input.detected.dir
-    setSource('server.dir', 'detected')
+  const directoryPick = firstOf<string>(
+    [staticValue, 'cli'],
+    [optionalString(config.server?.dir), 'config'],
+    [input.detected?.dir, 'detected']
+  )
+  let serverDir: string | undefined
+  if (directoryPick.value) {
+    serverDir = isAbsolute(directoryPick.value)
+      ? directoryPick.value
+      : resolve(configDir, directoryPick.value)
+    setSource('server.dir', directoryPick.source ?? 'config')
   }
 
-  const command = cli.command
-    ?? optionalString(env.FLASH_TUNNEL_COMMAND)
-    ?? optionalString(config.server?.command)
-    ?? optionalString(input.detected?.command)
+  const commandPick = firstOf<string>(
+    [optionalString(cli.command), 'cli'],
+    [optionalString(env.FLASH_TUNNEL_COMMAND), 'env'],
+    [optionalString(config.server?.command), 'config'],
+    [optionalString(input.detected?.command), 'detected']
+  )
+  const command = commandPick.value
   if (command) {
-    setSource(
-      'server.command',
-      cli.command ? 'cli' : env.FLASH_TUNNEL_COMMAND ? 'env' : config.server?.command ? 'config' : 'detected',
-      input.detected?.reason
-    )
+    setSource('server.command', commandPick.source ?? 'detected', input.detected?.reason)
   }
 
-  const url = cli.url ?? optionalString(config.server?.url) ?? input.detected?.url
+  const urlPick = firstOf<string>(
+    [optionalString(cli.url), 'cli'],
+    [optionalString(config.server?.url), 'config'],
+    [optionalString(input.detected?.url), 'detected']
+  )
+  const url = urlPick.value
   if (url) {
     if (!URL.canParse(url)) {
       throw invalid(`server.url is not a valid URL: "${url}"`, 'Use http://127.0.0.1:5173 or https://...')
     }
-    setSource('server.url', cli.url ? 'cli' : config.server?.url ? 'config' : 'detected')
+    setSource('server.url', urlPick.source ?? 'detected')
   }
 
-  const portCandidate = cli.port
-    ?? optionalString(env.FLASH_TUNNEL_PORT)
-    ?? config.server?.port
-    ?? input.detected?.port
+  const portPick = firstOf<string | number>(
+    [cli.port, 'cli'],
+    [optionalString(env.FLASH_TUNNEL_PORT), 'env'],
+    [config.server?.port, 'config'],
+    [input.detected?.port, 'detected']
+  )
   let port: number | undefined
-  if (portCandidate !== undefined && portCandidate !== '') {
-    port = portNumber(portCandidate, 'server.port')
-    setSource(
-      'server.port',
-      cli.port !== undefined ? 'cli' : env.FLASH_TUNNEL_PORT ? 'env' : config.server?.port !== undefined ? 'config' : 'detected'
-    )
+  if (portPick.value !== undefined && portPick.value !== '') {
+    port = portNumber(portPick.value, 'server.port')
+    setSource('server.port', portPick.source ?? 'detected')
   }
 
   const timeout = config.server?.timeout === undefined
@@ -279,10 +310,12 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
     throw invalid('--attach cannot be used with server.command', 'Attach to a running server instead of starting one')
   }
 
-  const modeCandidate = cli.mode
-    ?? optionalString(env.FLASH_TUNNEL_MODE)
-    ?? config.tunnel?.mode
-    ?? 'named'
+  const modePick = firstOf<string>(
+    [optionalString(cli.mode), 'cli'],
+    [optionalString(env.FLASH_TUNNEL_MODE), 'env'],
+    [optionalString(config.tunnel?.mode), 'config']
+  )
+  const modeCandidate = modePick.value ?? 'named'
   if (modeCandidate !== 'named' && modeCandidate !== 'quick') {
     throw invalid(`tunnel.mode must be "named" or "quick" (got "${modeCandidate}")`)
   }
@@ -291,26 +324,21 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
     hostname = undefined
     delete sources['domain.hostname']
   }
-  setSource(
-    'tunnel.mode',
-    cli.mode ? 'cli' : env.FLASH_TUNNEL_MODE ? 'env' : config.tunnel?.mode ? 'config' : 'default'
-  )
+  setSource('tunnel.mode', modePick.source ?? 'default')
 
-  const tunnelProvider = optionalString(env.FLASH_TUNNEL_TUNNEL_PROVIDER)
-    ?? optionalString(config.tunnel?.provider)
-    ?? 'cloudflare'
-  setSource(
-    'tunnel.provider',
-    env.FLASH_TUNNEL_TUNNEL_PROVIDER ? 'env' : config.tunnel?.provider ? 'config' : 'default'
+  const tunnelProviderPick = firstOf<string>(
+    [optionalString(env.FLASH_TUNNEL_TUNNEL_PROVIDER), 'env'],
+    [optionalString(config.tunnel?.provider), 'config']
   )
+  const tunnelProvider = tunnelProviderPick.value ?? 'cloudflare'
+  setSource('tunnel.provider', tunnelProviderPick.source ?? 'default')
 
-  const domainProvider = optionalString(env.FLASH_TUNNEL_DNS_PROVIDER)
-    ?? optionalString(config.domain?.provider)
-    ?? 'cloudflare'
-  setSource(
-    'domain.provider',
-    env.FLASH_TUNNEL_DNS_PROVIDER ? 'env' : config.domain?.provider ? 'config' : 'default'
+  const domainProviderPick = firstOf<string>(
+    [optionalString(env.FLASH_TUNNEL_DNS_PROVIDER), 'env'],
+    [optionalString(config.domain?.provider), 'config']
   )
+  const domainProvider = domainProviderPick.value ?? 'cloudflare'
+  setSource('domain.provider', domainProviderPick.source ?? 'default')
 
   const tunnelNameTemplate = optionalString(config.tunnel?.name)
     ?? `flash-tunnel-${project}-{rand}`
@@ -327,33 +355,40 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
   }
   setSource('tunnel.name', config.tunnel?.name ? 'config' : 'default')
 
-  const accountId = optionalString(env.CLOUDFLARE_ACCOUNT_ID)
-    ?? optionalString(config.providers?.cloudflare?.accountId)
-  if (accountId) {
-    setSource('providers.cloudflare.accountId', env.CLOUDFLARE_ACCOUNT_ID ? 'env' : 'config')
-  }
-
-  const zoneId = optionalString(env.CLOUDFLARE_ZONE_ID)
-    ?? optionalString(config.providers?.cloudflare?.zoneId)
-  if (zoneId) {
-    setSource('providers.cloudflare.zoneId', env.CLOUDFLARE_ZONE_ID ? 'env' : 'config')
-  }
-
-  const cloudflaredPath = optionalString(env.FLASH_TUNNEL_CLOUDFLARED)
-    ?? optionalString(config.providers?.cloudflare?.cloudflaredPath)
-    ?? 'cloudflared'
-  setSource(
-    'providers.cloudflare.cloudflaredPath',
-    env.FLASH_TUNNEL_CLOUDFLARED ? 'env' : config.providers?.cloudflare?.cloudflaredPath ? 'config' : 'default'
+  const accountPick = firstOf<string>(
+    [optionalString(env.CLOUDFLARE_ACCOUNT_ID), 'env'],
+    [optionalString(config.providers?.cloudflare?.accountId), 'config']
   )
+  const accountId = accountPick.value
+  if (accountId) {
+    setSource('providers.cloudflare.accountId', accountPick.source ?? 'env')
+  }
 
-  const autoStopValue = cli.autoStop
-    ?? optionalString(env.FLASH_TUNNEL_AUTO_STOP)
-    ?? config.autoStopAfter
+  const zoneIdPick = firstOf<string>(
+    [optionalString(env.CLOUDFLARE_ZONE_ID), 'env'],
+    [optionalString(config.providers?.cloudflare?.zoneId), 'config']
+  )
+  const zoneId = zoneIdPick.value
+  if (zoneId) {
+    setSource('providers.cloudflare.zoneId', zoneIdPick.source ?? 'env')
+  }
+
+  const cloudflaredPick = firstOf<string>(
+    [optionalString(env.FLASH_TUNNEL_CLOUDFLARED), 'env'],
+    [optionalString(config.providers?.cloudflare?.cloudflaredPath), 'config']
+  )
+  const cloudflaredPath = cloudflaredPick.value ?? 'cloudflared'
+  setSource('providers.cloudflare.cloudflaredPath', cloudflaredPick.source ?? 'default')
+
+  const autoStopPick = firstOf<string | number>(
+    [cli.autoStop, 'cli'],
+    [optionalString(env.FLASH_TUNNEL_AUTO_STOP), 'env'],
+    [config.autoStopAfter, 'config']
+  )
   let autoStopAfter: number | undefined
-  if (autoStopValue !== undefined && autoStopValue !== '') {
+  if (autoStopPick.value !== undefined && autoStopPick.value !== '') {
     try {
-      autoStopAfter = parseDuration(autoStopValue)
+      autoStopAfter = parseDuration(autoStopPick.value)
     }
     catch (error) {
       throw invalid(
@@ -362,10 +397,7 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
         error
       )
     }
-    setSource(
-      'autoStopAfter',
-      cli.autoStop ? 'cli' : env.FLASH_TUNNEL_AUTO_STOP ? 'env' : 'config'
-    )
+    setSource('autoStopAfter', autoStopPick.source ?? 'config')
   }
 
   return {
