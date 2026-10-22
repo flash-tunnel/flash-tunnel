@@ -4,6 +4,7 @@ import type { ServerHandle, ServerPlan, StartServerOptions } from './types'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { sleep, stripAnsi } from '@flash-tunnel/utils'
+import { killProcessTree } from '../process'
 import { startStaticServer } from './static'
 
 // Only the origin is useful: cloudflared proxies to a host/port and keeps the
@@ -38,61 +39,14 @@ async function reachable(url: string): Promise<boolean> {
   }
 }
 
-function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve(true)
-  }
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      child.off('exit', onExit)
-      resolve(false)
-    }, timeoutMs)
-
-    function onExit(): void {
-      clearTimeout(timer)
-      resolve(true)
-    }
-
-    child.once('exit', onExit)
-  })
-}
-
-async function killProcessTree(child: ChildProcess): Promise<void> {
+async function stopChild(child: ChildProcess): Promise<void> {
   const pid = child.pid
   if (!pid || child.exitCode !== null) {
     return
   }
 
-  if (process.platform === 'win32') {
-    await new Promise<void>((resolve) => {
-      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true
-      })
-      killer.once('exit', () => resolve())
-      killer.once('error', () => resolve())
-    })
-    await waitForExit(child, 5000)
-    return
-  }
-
-  try {
-    process.kill(-pid, 'SIGTERM')
-  }
-  catch {
-    child.kill('SIGTERM')
-  }
-
-  if (!await waitForExit(child, 5000)) {
-    try {
-      process.kill(-pid, 'SIGKILL')
-    }
-    catch {
-      child.kill('SIGKILL')
-    }
-    await waitForExit(child, 2000)
-  }
+  // One kill policy for every process the tool spawns or reaps.
+  await killProcessTree(pid)
 }
 
 async function attachToServer(plan: ServerPlan): Promise<ServerHandle> {
@@ -186,13 +140,13 @@ async function startCommandServer(plan: ServerPlan, options: StartServerOptions)
     output,
     exited,
     stop: async () => {
-      await killProcessTree(child)
+      await stopChild(child)
     }
   }
 
   while (Date.now() - startedAt < timeoutMs) {
     if (options.signal?.aborted) {
-      await killProcessTree(child)
+      await stopChild(child)
       throw options.signal.reason ?? new Error('Aborted')
     }
 
@@ -220,12 +174,12 @@ async function startCommandServer(plan: ServerPlan, options: StartServerOptions)
       await sleep(300, options.signal)
     }
     catch (error) {
-      await killProcessTree(child)
+      await stopChild(child)
       throw error
     }
   }
 
-  await killProcessTree(child)
+  await stopChild(child)
   throw new Error(`Timed out after ${timeoutMs}ms waiting for the dev server.\n${output.slice(-20).join('\n')}`)
 }
 
