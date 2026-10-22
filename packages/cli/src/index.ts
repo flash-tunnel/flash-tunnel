@@ -7,7 +7,7 @@ import type {
   SessionCleaner,
   SessionState
 } from '@flash-tunnel/core'
-import type { AdapterContext, FlashTunnelEvents } from '@flash-tunnel/types'
+import type { AdapterContext, DnsAdapter, FlashTunnelEvents, TunnelAdapter } from '@flash-tunnel/types'
 import type { Command } from 'cac'
 import type { ReporterOptions } from './ui/reporter'
 import { spawn, spawnSync } from 'node:child_process'
@@ -447,10 +447,6 @@ function printEffectiveConfig(resolved: ResolvedConfig, reporter: Reporter): voi
       : ''
     reporter.human(`  ${key.padEnd(32)} ${String(value ?? '-').padEnd(28)} ${source}\n`)
   }
-
-  for (const warning of resolved.warnings) {
-    reporter.warn(warning)
-  }
 }
 
 function buildEffectiveConfig(
@@ -530,7 +526,42 @@ function detectPreviewServer(
 
 async function startPreview(options: StartOptions, reporter: Reporter): Promise<void> {
   const cwd = resolve(options.cwd ?? process.cwd())
+  const plan = await createPreviewPlan(cwd, options, reporter)
 
+  if (!plan) {
+    return
+  }
+
+  await runPreviewSession(plan, options, reporter)
+}
+
+interface PreviewPlan {
+  cwd: string
+  /** Config as loaded, before resolution; keeps detection/source hints intact. */
+  config: FlashTunnelConfig
+  /** Resolved config merged over the loaded one; what the session runs with. */
+  effectiveConfig: FlashTunnelConfig
+  resolved: ResolvedConfig
+  mode: ResolvedConfig['values']['tunnel']['mode']
+  zone?: string
+  hostname?: string
+  autoStopAfterMs?: number
+  apiToken?: string
+  apiBase?: string
+  configSource?: string
+}
+
+/**
+ * Everything that can be decided before any resource is created: sweep, build,
+ * auth fallback, zone discovery, server detection, port negotiation and the
+ * effective configuration. Returns undefined when the caller only wants a
+ * dry-run report.
+ */
+async function createPreviewPlan(
+  cwd: string,
+  options: StartOptions,
+  reporter: Reporter
+): Promise<PreviewPlan | undefined> {
   let loaded: Awaited<ReturnType<typeof loadFlashTunnelConfig>>
   try {
     loaded = await loadFlashTunnelConfig(cwd, { config: options.config })
@@ -703,7 +734,7 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   if (options.dryRun) {
     printEffectiveConfig(resolved, reporter)
-    return
+    return undefined
   }
 
   const mode = resolved.values.tunnel.mode
@@ -732,6 +763,44 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
       url: `http://127.0.0.1:${detected?.port}`
     }
   }
+
+  return {
+    cwd,
+    config,
+    effectiveConfig,
+    resolved,
+    mode,
+    zone,
+    hostname,
+    autoStopAfterMs,
+    apiToken,
+    apiBase,
+    configSource: source
+  }
+}
+
+/**
+ * Adapter resolution, preflight, session start, the wait loop and teardown.
+ * Anything that creates or destroys a resource lives here.
+ */
+async function runPreviewSession(
+  plan: PreviewPlan,
+  options: StartOptions,
+  reporter: Reporter
+): Promise<void> {
+  const {
+    cwd,
+    config,
+    effectiveConfig,
+    resolved,
+    mode,
+    zone,
+    hostname,
+    autoStopAfterMs,
+    apiToken,
+    apiBase,
+    configSource: source
+  } = plan
 
   const tunnelProvider = resolved.values.tunnel.provider
   const domainProvider = resolved.values.domain.provider
@@ -771,87 +840,12 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
 
   let overwrite = options.overwrite ?? false
   if (mode === 'named' && dns && zone && hostname) {
-    const preflightCtx: AdapterContext = {
-      sessionId: 'ft_preflight',
-      cwd,
-      signal: new AbortController().signal,
-      now: Date.now,
-      logger: {
-        debug: () => {},
-        info: () => {},
-        warn: (message: string) => reporter.warn(message),
-        error: (message: string) => reporter.warn(message)
-      }
-    }
-
-    try {
-      await dns.preflight(preflightCtx, {
-        zone,
-        name: hostname,
-        type: tunnel.capabilities.dns?.type ?? 'CNAME',
-        overwrite
-      })
-    }
-    catch (error) {
-      if (error instanceof AdapterError && error.code === 'RECORD_CONFLICT' && canPrompt(options)) {
-        overwrite = await confirmOverwrite(hostname)
-        if (!overwrite) {
-          throw error
-        }
-        reporter.warn(`Overwriting the existing DNS record for ${hostname}`)
-      }
-      else {
-        throw error
-      }
-    }
+    overwrite = await preflightDns(dns, tunnel, { cwd, zone, hostname, overwrite }, options, reporter)
   }
 
-  let keep = options.keep ?? false
-  if (keep && canPrompt(options)) {
-    keep = await confirmKeep()
-    if (!keep) {
-      reporter.log(`${theme.dim('--keep cancelled; resources will be removed on exit.')}\n`)
-    }
-  }
+  const keep = await resolveKeep(options, reporter)
 
-  const events = new Emitter<FlashTunnelEvents>()
-  events.on('server:ready', payload => reporter.event({
-    type: 'server:ready',
-    localUrl: payload.url,
-    startedByUs: payload.startedByUs,
-    durationMs: payload.durationMs
-  }))
-  events.on('tunnel:provisioned', payload => reporter.event({
-    type: 'tunnel:provisioned',
-    tunnelId: payload.tunnelId,
-    name: payload.name
-  }))
-  events.on('tunnel:connected', payload => reporter.event({
-    type: 'tunnel:connected',
-    connections: payload.connections
-  }))
-  events.on('dns:created', payload => reporter.event({
-    type: 'dns:created',
-    hostname: payload.hostname,
-    recordId: payload.recordId,
-    zoneId: payload.zoneId
-  }))
-  events.on('cleanup:step', payload => reporter.event({
-    type: 'cleanup:step',
-    kind: payload.kind,
-    status: payload.status,
-    ...(payload.detail ? { detail: payload.detail } : {})
-  }))
-  events.on('cleanup:done', payload => reporter.event({
-    type: 'cleanup',
-    ok: payload.ok,
-    removed: payload.removed,
-    failed: payload.failed
-  }))
-  events.on('autostop:expired', payload => reporter.event({
-    type: 'autostop',
-    expiresAt: new Date(payload.expiresAt).toISOString()
-  }))
+  const events = wireEvents(reporter)
 
   const steps = new StepUi(reporter, {
     enabled: options.spinner === false ? false : undefined
@@ -913,6 +907,163 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     installSessionWatchdog(session.sessionId)
   }
 
+  await reportSessionReady(session, options, reporter, keep)
+
+  let requestQuit: () => void = () => {}
+  const quit = new Promise<void>((resolveQuit) => {
+    requestQuit = resolveQuit
+  })
+  const disposeShortcuts = installShortcuts({
+    onQuit: () => requestQuit(),
+    onCopy: () => {
+      if (copyToClipboard(session.publicUrl)) {
+        reporter.log(`${theme.dim('copied')} ${session.publicUrl}\n`)
+      }
+      else {
+        reporter.warn('No clipboard tool found; copy the URL manually')
+      }
+    },
+    onOpen: () => openUrl(session.publicUrl)
+  })
+
+  let outcome: StopOutcome
+  try {
+    outcome = await waitForStop(session, quit)
+  }
+  finally {
+    disposeShortcuts()
+  }
+
+  applyStopOutcome(outcome, reporter)
+  await stopPreviewSession(session, reporter)
+
+  if (keep) {
+    reporter.human(`${theme.dim(`Kept resources. Clean up later: flash-tunnel clean --session ${session.sessionId}`)}\n`)
+  }
+}
+
+/** Forward core events as NDJSON lines for --json consumers. */
+function wireEvents(reporter: Reporter): Emitter<FlashTunnelEvents> {
+  const events = new Emitter<FlashTunnelEvents>()
+  events.on('server:ready', payload => reporter.event({
+    type: 'server:ready',
+    localUrl: payload.url,
+    startedByUs: payload.startedByUs,
+    durationMs: payload.durationMs
+  }))
+  events.on('tunnel:provisioned', payload => reporter.event({
+    type: 'tunnel:provisioned',
+    tunnelId: payload.tunnelId,
+    name: payload.name
+  }))
+  events.on('tunnel:connected', payload => reporter.event({
+    type: 'tunnel:connected',
+    connections: payload.connections
+  }))
+  events.on('dns:created', payload => reporter.event({
+    type: 'dns:created',
+    hostname: payload.hostname,
+    recordId: payload.recordId,
+    zoneId: payload.zoneId
+  }))
+  events.on('cleanup:step', payload => reporter.event({
+    type: 'cleanup:step',
+    kind: payload.kind,
+    status: payload.status,
+    ...(payload.detail ? { detail: payload.detail } : {})
+  }))
+  events.on('cleanup:done', payload => reporter.event({
+    type: 'cleanup',
+    ok: payload.ok,
+    removed: payload.removed,
+    failed: payload.failed
+  }))
+  events.on('autostop:expired', payload => reporter.event({
+    type: 'autostop',
+    expiresAt: new Date(payload.expiresAt).toISOString()
+  }))
+
+  return events
+}
+
+interface DnsPreflightTarget {
+  cwd: string
+  zone: string
+  hostname: string
+  overwrite: boolean
+}
+
+/**
+ * Check the DNS record before anything is created, and offer to replace a record
+ * another tool owns. Returns the effective overwrite flag.
+ */
+async function preflightDns(
+  dns: DnsAdapter,
+  tunnel: TunnelAdapter,
+  target: DnsPreflightTarget,
+  options: StartOptions,
+  reporter: Reporter
+): Promise<boolean> {
+  const { cwd, zone, hostname } = target
+  let overwrite = target.overwrite
+  const ctx: AdapterContext = {
+    sessionId: 'ft_preflight',
+    cwd,
+    signal: new AbortController().signal,
+    now: Date.now,
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: (message: string) => reporter.warn(message),
+      error: (message: string) => reporter.warn(message)
+    }
+  }
+
+  try {
+    await dns.preflight(ctx, {
+      zone,
+      name: hostname,
+      type: tunnel.capabilities.dns?.type ?? 'CNAME',
+      overwrite
+    })
+  }
+  catch (error) {
+    if (error instanceof AdapterError && error.code === 'RECORD_CONFLICT' && canPrompt(options)) {
+      overwrite = await confirmOverwrite(hostname)
+      if (!overwrite) {
+        throw error
+      }
+      reporter.warn(`Overwriting the existing DNS record for ${hostname}`)
+    }
+    else {
+      throw error
+    }
+  }
+
+  return overwrite
+}
+
+/** `--keep` needs a confirmation; a cancelled prompt falls back to cleanup. */
+async function resolveKeep(options: StartOptions, reporter: Reporter): Promise<boolean> {
+  const requested = options.keep ?? false
+  if (!requested || !canPrompt(options)) {
+    return requested
+  }
+
+  const keep = await confirmKeep()
+  if (!keep) {
+    reporter.log(`${theme.dim('--keep cancelled; resources will be removed on exit.')}\n`)
+  }
+  return keep
+}
+
+/** Print the preview URLs, emit the ready payload and open the browser. */
+async function reportSessionReady(
+  session: PreviewSession,
+  options: StartOptions,
+  reporter: Reporter,
+  keep: boolean
+): Promise<void> {
   reporter.human(`${theme.ok(symbols.ok)} local  ${theme.url(session.localUrl)}\n`)
   if (session.dns && session.hostname) {
     reporter.human(`${theme.ok(symbols.ok)} dns    ${session.hostname} ${theme.dim(`(${session.dns.type} → ${session.dns.content})`)}\n`)
@@ -946,32 +1097,10 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   if (keep) {
     reporter.warn(`--keep: resources will stay until you run flash-tunnel clean --session ${session.sessionId}`)
   }
+}
 
-  let requestQuit: () => void = () => {}
-  const quit = new Promise<void>((resolveQuit) => {
-    requestQuit = resolveQuit
-  })
-  const disposeShortcuts = installShortcuts({
-    onQuit: () => requestQuit(),
-    onCopy: () => {
-      if (copyToClipboard(session.publicUrl)) {
-        reporter.log(`${theme.dim('copied')} ${session.publicUrl}\n`)
-      }
-      else {
-        reporter.warn('No clipboard tool found; copy the URL manually')
-      }
-    },
-    onOpen: () => openUrl(session.publicUrl)
-  })
-
-  let outcome: StopOutcome
-  try {
-    outcome = await waitForStop(session, quit)
-  }
-  finally {
-    disposeShortcuts()
-  }
-
+/** Translate the wait-loop outcome into messages and the process exit code. */
+function applyStopOutcome(outcome: StopOutcome, reporter: Reporter): void {
   const { reason, error: fatalError } = outcome
 
   if (reason === 'fatal') {
@@ -995,9 +1124,13 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
   else {
     reporter.log(`${theme.dim(reason === 'auto-stop' ? 'Auto-stop reached; cleaning up...' : 'Stopping...')}\n`)
   }
+}
 
+/** Stop the session and map an incomplete cleanup to exit code 8. */
+async function stopPreviewSession(session: PreviewSession, reporter: Reporter): Promise<void> {
   const removeEscalation = installInterruptEscalation()
   let stoppedCleanly = false
+
   try {
     await session.stop()
     stoppedCleanly = true
@@ -1021,10 +1154,6 @@ async function startPreview(options: StartOptions, reporter: Reporter): Promise<
     if (stoppedCleanly) {
       pendingReapSessionId = undefined
     }
-  }
-
-  if (keep) {
-    reporter.human(`${theme.dim(`Kept resources. Clean up later: flash-tunnel clean --session ${session.sessionId}`)}\n`)
   }
 }
 
