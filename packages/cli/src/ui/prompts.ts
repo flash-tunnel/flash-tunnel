@@ -30,83 +30,63 @@ function promptFailure(error: unknown): never {
   throw error
 }
 
-export async function chooseZone(zones: CloudflareZone[]): Promise<string> {
+/** Run a prompt and turn a user cancellation into the shared exit-code 130 error. */
+async function withPrompt<T>(work: () => Promise<T>): Promise<T> {
   try {
-    return await select<string>({
-      message: 'Select a Cloudflare zone',
-      choices: zones.map(zone => ({
-        name: `${zone.name} (${zone.status})`,
-        value: zone.name
-      }))
-    })
+    return await work()
   }
   catch (error) {
-    promptFailure(error)
+    return promptFailure(error)
   }
 }
 
-export async function confirmQuickFallback(): Promise<boolean> {
-  try {
-    return await confirm({
-      message: 'CLOUDFLARE_API_TOKEN is not set. Use a temporary trycloudflare.com domain instead?',
-      default: false
-    })
-  }
-  catch (error) {
-    promptFailure(error)
-  }
+export function chooseZone(zones: CloudflareZone[]): Promise<string> {
+  return withPrompt(() => select<string>({
+    message: 'Select a Cloudflare zone',
+    choices: zones.map(zone => ({
+      name: `${zone.name} (${zone.status})`,
+      value: zone.name
+    }))
+  }))
 }
 
-export async function chooseWorkspace(candidates: WorkspaceCandidate[]): Promise<WorkspaceCandidate> {
-  try {
-    return await select<WorkspaceCandidate>({
-      message: 'Select the workspace to preview',
-      choices: candidates.map(candidate => ({
-        name: `${candidate.name}  ${candidate.cwd}`,
-        value: candidate
-      }))
-    })
-  }
-  catch (error) {
-    promptFailure(error)
-  }
+export function confirmQuickFallback(): Promise<boolean> {
+  return withPrompt(() => confirm({
+    message: 'CLOUDFLARE_API_TOKEN is not set. Use a temporary trycloudflare.com domain instead?',
+    default: false
+  }))
 }
 
-export async function choosePortConflict(port: number): Promise<'exit' | 'reuse'> {
-  try {
-    return await select<'exit' | 'reuse'>({
-      message: `Port ${port} is already in use`,
-      choices: [
-        { name: 'Reuse the server already running on this port', value: 'reuse' },
-        { name: 'Exit', value: 'exit' }
-      ]
-    })
-  }
-  catch (error) {
-    promptFailure(error)
-  }
+export function chooseWorkspace(candidates: WorkspaceCandidate[]): Promise<WorkspaceCandidate> {
+  return withPrompt(() => select<WorkspaceCandidate>({
+    message: 'Select the workspace to preview',
+    choices: candidates.map(candidate => ({
+      name: `${candidate.name}  ${candidate.cwd}`,
+      value: candidate
+    }))
+  }))
 }
 
-export async function confirmOverwrite(hostname: string): Promise<boolean> {
-  try {
-    return await confirm({
-      message: `DNS record "${hostname}" was created by another tool. Replace it?`,
-      default: false
-    })
-  }
-  catch (error) {
-    promptFailure(error)
-  }
+export function choosePortConflict(port: number): Promise<'exit' | 'reuse'> {
+  return withPrompt(() => select<'exit' | 'reuse'>({
+    message: `Port ${port} is already in use`,
+    choices: [
+      { name: 'Reuse the server already running on this port', value: 'reuse' },
+      { name: 'Exit', value: 'exit' }
+    ]
+  }))
 }
 
-export async function confirmKeep(): Promise<boolean> {
-  try {
-    return await confirm({
-      message: '--keep leaves the DNS record and tunnel behind. Continue?',
-      default: false
-    })
-  }
-  catch (error) {
-    promptFailure(error)
-  }
+export function confirmOverwrite(hostname: string): Promise<boolean> {
+  return withPrompt(() => confirm({
+    message: `DNS record "${hostname}" was created by another tool. Replace it?`,
+    default: false
+  }))
+}
+
+export function confirmKeep(): Promise<boolean> {
+  return withPrompt(() => confirm({
+    message: '--keep leaves the DNS record and tunnel behind. Continue?',
+    default: false
+  }))
 }
