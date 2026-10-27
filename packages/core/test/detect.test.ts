@@ -175,4 +175,9 @@ describe('detectServer', () => {
     expect(plan.cwd).toBe(join(cwd, 'apps', 'web'))
     expect(plan.command).toBe('pnpm run dev')
   })
+
+  it('reports a machine-readable error when no runnable server exists', async () => {
+    const cwd = await createFixture({})
+    expect(() => detectServer(cwd)).toThrow(expect.objectContaining({ code: 'NO_RUNNABLE_SCRIPT', exitCode: 3 }))
+  })
 })

@@ -2,6 +2,7 @@ import type { ServerConfig } from '@flash-tunnel/config'
 import type { Framework, PackageManager, ServerPlan } from './types'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { FlashTunnelError } from '../errors'
 
 interface FrameworkDefinition {
   name: Framework
@@ -325,7 +326,9 @@ export function detectServer(
     )
   }
 
-  throw new Error(
-    'No runnable script found. Set server.command in flash-tunnel.ts (for example "pnpm dev"), or build the project to a dist/ directory.'
-  )
+  throw new FlashTunnelError('No runnable script found', {
+    code: 'NO_RUNNABLE_SCRIPT',
+    exitCode: 3,
+    hint: 'Set server.command in flash-tunnel.ts (for example "pnpm dev"), or build the project to a dist/ directory.'
+  })
 }

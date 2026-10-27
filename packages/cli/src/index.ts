@@ -643,7 +643,7 @@ async function createPreviewPlan(
   catch (error) {
     detectionError = error
 
-    if (/No runnable script/.test(errorMessage(error))) {
+    if (error instanceof FlashTunnelError && error.code === 'NO_RUNNABLE_SCRIPT') {
       const candidates = detectWorkspaceCandidates(cwd)
 
       if (candidates.length > 0) {
