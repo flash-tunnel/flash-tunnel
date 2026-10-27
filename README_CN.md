@@ -10,7 +10,7 @@
 [![license](https://img.shields.io/npm/l/flash-tunnel?style=flat-square)](https://github.com/flash-tunnel/flash-tunnel/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/flash-tunnel?style=flat-square)](https://www.npmjs.com/package/flash-tunnel)
 
-> 当前为早期预览版（`0.0.x`），接口和行为仍可能调整。
+> 当前为早期预览版（`0.x`），接口和行为仍可能调整。
 
 ## 为什么用它
 

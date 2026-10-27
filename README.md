@@ -10,7 +10,7 @@ Detect and start your local server, expose it through Cloudflare Tunnel, and cle
 [![license](https://img.shields.io/npm/l/flash-tunnel?style=flat-square)](https://github.com/flash-tunnel/flash-tunnel/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/flash-tunnel?style=flat-square)](https://www.npmjs.com/package/flash-tunnel)
 
-> Early preview (`0.0.x`). APIs and behavior may still change.
+> Early preview (`0.x`). APIs and behavior may still change.
 
 ## Why flash-tunnel
 
