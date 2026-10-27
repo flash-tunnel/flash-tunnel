@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { AdapterError } from '@flash-tunnel/types'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CleanupError, readSessionState, sessionLogPath, startPreviewSession } from '../src'
+import { CleanupError, detectServer, readSessionState, sessionLogPath, startPreviewSession } from '../src'
 
 const directories: string[] = []
 const sessions: Array<{ stop: () => Promise<void> }> = []
@@ -155,6 +155,42 @@ afterEach(async () => {
 })
 
 describe('startPreviewSession', () => {
+  it('executes the supplied plan without detecting the server again', async () => {
+    const cwd = await createDirectory({ 'public/index.html': '<h1>planned-server</h1>' })
+    const serverPlan = detectServer(cwd, { dir: 'public', port: 0 })
+
+    const session = await startPreviewSession({
+      cwd,
+      config: {},
+      serverPlan,
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick'
+    })
+    sessions.push(session)
+
+    expect(session.server.plan).toBe(serverPlan)
+    expect(await (await fetch(session.localUrl)).text()).toContain('planned-server')
+  })
+
+  it('does not allocate session state when fallback detection fails', async () => {
+    const cwd = await createDirectory({})
+    await expect(startPreviewSession({
+      cwd,
+      config: {},
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick'
+    })).rejects.toThrow(/No runnable script/)
+
+    expect(await readSessionState(cwd)).toBeUndefined()
+    // A second attempt must report detection failure rather than a leaked project lock.
+    await expect(startPreviewSession({
+      cwd,
+      config: {},
+      adapters: { tunnel: createFakeTunnel() },
+      mode: 'quick'
+    })).rejects.toThrow(/No runnable script/)
+  })
+
   it('starts the server, provisions the tunnel and stops both', async () => {
     const cwd = await createDirectory({
       'server.mjs': `

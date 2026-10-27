@@ -9,7 +9,7 @@ import type {
   TunnelHandle,
   TunnelMode
 } from '@flash-tunnel/types'
-import type { ServerHandle } from '../server/types'
+import type { ServerHandle, ServerPlan } from '../server/types'
 import type { SessionPhase, SessionState } from '../state/store'
 import type { LedgerKind } from './ledger'
 import { basename } from 'node:path'
@@ -70,6 +70,8 @@ export interface PreviewAdapters {
 export interface StartPreviewSessionOptions {
   cwd: string
   config: FlashTunnelConfig
+  /** Execute a caller-resolved plan without repeating server detection. */
+  serverPlan?: ServerPlan
   adapters: PreviewAdapters
   mode?: TunnelMode
   hostname?: string
@@ -188,6 +190,9 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
     })
   }
 
+  // Resolve before allocating session resources so a detection failure needs no cleanup.
+  const plan = options.serverPlan ?? detectServer(cwd, config.server)
+
   const sessionId = createSessionId()
   let state: SessionState | undefined
   let lockAcquired = false
@@ -277,7 +282,6 @@ export async function startPreviewSession(options: StartPreviewSessionOptions): 
   }
 
   const serverStartedAt = Date.now()
-  const plan = detectServer(cwd, config.server)
   emitStep('server', 'start')
   let server: ServerHandle
   try {

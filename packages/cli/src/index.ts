@@ -4,6 +4,7 @@ import type {
   PreviewSession,
   ResolveConfigInput,
   ResolvedConfig,
+  ServerPlan,
   SessionCleaner,
   SessionState
 } from '@flash-tunnel/core'
@@ -484,23 +485,13 @@ function buildEffectiveConfig(
   }
 }
 
-interface DetectedServer {
-  command?: string
-  port?: number
-  dir?: string
-  url?: string
-  mode?: string
-  framework?: string
-  reason?: string
-}
-
 /** Detect the dev server once, for both the first attempt and the workspace retry. */
 function detectPreviewServer(
   cwd: string,
   server: ResolvedConfig['values']['server'],
   options: StartOptions
-): DetectedServer {
-  const plan = detectServer(cwd, {
+): ServerPlan {
+  return detectServer(cwd, {
     cwd: server.cwd,
     command: server.command,
     port: server.port,
@@ -511,15 +502,6 @@ function detectPreviewServer(
     forceDev: options.dev,
     forceStatic: options.static !== undefined
   })
-
-  return {
-    command: plan.command,
-    port: plan.port,
-    dir: plan.mode === 'static' ? plan.dir : undefined,
-    mode: plan.mode,
-    framework: plan.framework,
-    reason: plan.reason
-  }
 }
 
 async function startPreview(options: StartOptions, reporter: Reporter): Promise<void> {
@@ -539,6 +521,7 @@ interface PreviewPlan {
   config: FlashTunnelConfig
   /** Resolved config merged over the loaded one; what the session runs with. */
   effectiveConfig: FlashTunnelConfig
+  serverPlan: ServerPlan
   resolved: ResolvedConfig
   mode: ResolvedConfig['values']['tunnel']['mode']
   zone?: string
@@ -652,7 +635,7 @@ async function createPreviewPlan(
     }
   }
 
-  let detected: DetectedServer | undefined
+  let detected: ServerPlan | undefined
   let detectionError: unknown
   try {
     detected = detectPreviewServer(cwd, preliminary.values.server, options)
@@ -702,10 +685,15 @@ async function createPreviewPlan(
       }
 
       detected = {
+        ...detected,
+        command: undefined,
+        script: undefined,
+        dir: undefined,
         port: detected.port,
         url: `http://127.0.0.1:${detected.port}`,
         mode: 'attach',
         framework: detected.framework,
+        confidence: 'high',
         reason: `port ${detected.port} is in use; reusing the running server`
       }
       reusedPort = true
@@ -731,6 +719,13 @@ async function createPreviewPlan(
   if (options.dryRun) {
     printEffectiveConfig(resolved, reporter)
     return undefined
+  }
+
+  if (!detected) {
+    throw detectionError ?? new FlashTunnelError('Failed to detect a local server', {
+      code: 'SERVER_DETECTION_FAILED',
+      exitCode: 3
+    })
   }
 
   const mode = resolved.values.tunnel.mode
@@ -764,6 +759,7 @@ async function createPreviewPlan(
     cwd,
     config,
     effectiveConfig,
+    serverPlan: detected,
     resolved,
     mode,
     zone,
@@ -788,6 +784,7 @@ async function runPreviewSession(
     cwd,
     config,
     effectiveConfig,
+    serverPlan,
     resolved,
     mode,
     zone,
@@ -866,6 +863,7 @@ async function runPreviewSession(
     session = await startPreviewSession({
       cwd,
       config: effectiveConfig,
+      serverPlan,
       adapters: { tunnel, dns },
       mode,
       hostname,
