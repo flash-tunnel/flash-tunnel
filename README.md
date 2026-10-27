@@ -125,6 +125,12 @@ export default defineConfig({
 - `subdomain` supports `{project}`, `{branch}`, `{rand}`, `{rand:6}`, `{session}`, and `{ts}`.
 - See the [configuration design](https://github.com/flash-tunnel/flash-tunnel/blob/main/ai-docs/design-docs/06-configuration.md) for every field and default.
 
+### Server detection
+
+- Package-manager discovery checks `packageManager` and lockfiles in the app directory, then walks upward to the Git or workspace root. The nearest declaration wins; build and start use the same rules.
+- Ports from explicit settings or script arguments are checked for conflicts. Framework and generic defaults are estimates: if occupied, flash-tunnel starts the command and waits for its actual local URL instead of reusing the existing listener. If the command prints no URL, specify the correct `--port`.
+- To intentionally reuse an existing service, pass `--reuse`, accept the port-conflict prompt, or use `--url <url> --attach`.
+
 ### Common options
 
 **Local server**

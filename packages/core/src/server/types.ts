@@ -1,5 +1,7 @@
 export type PackageManager = 'bun' | 'npm' | 'pnpm' | 'yarn'
 
+export type ServerPortSource = 'explicit' | 'script' | 'framework' | 'default' | 'url'
+
 export type Framework
   = | 'angular'
     | 'astro'
@@ -23,6 +25,8 @@ export interface ServerPlan {
   packageManagerSource?: string
   framework: Framework
   port: number
+  /** Defaults are estimates; manually constructed plans without a source use strict port checks. */
+  portSource?: ServerPortSource
   url?: string
   dir?: string
   reason: string

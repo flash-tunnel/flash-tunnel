@@ -28,6 +28,7 @@ import {
   errorHint,
   findStaleSessions,
   FlashTunnelError,
+  isInferredPort,
   isProcessAlive,
   listSessionStates,
   loadFlashTunnelConfig,
@@ -671,7 +672,8 @@ async function createPreviewPlan(
   }
 
   let reusedPort = false
-  if (detected?.port && detected.port > 0 && !preliminary.values.server.url && !options.attach) {
+  if (detected?.port && detected.port > 0 && detected.mode !== 'attach'
+    && !options.attach && (!isInferredPort(detected) || options.reuse)) {
     if (!await isPortAvailable(detected.port)) {
       const reuse = options.reuse
         || (canPrompt(options) && await choosePortConflict(detected.port) === 'reuse')

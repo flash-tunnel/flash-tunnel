@@ -44,6 +44,7 @@ describe('detectServer', () => {
     expect(plan.script).toBe('preview')
     expect(plan.command).toBe('pnpm run preview')
     expect(plan.port).toBe(4173)
+    expect(plan.portSource).toBe('framework')
     expect(plan.framework).toBe('vite')
     expect(plan.confidence).toBe('high')
   })
@@ -73,6 +74,7 @@ describe('detectServer', () => {
     })
 
     expect(detectServer(cwd).port).toBe(4100)
+    expect(detectServer(cwd).portSource).toBe('script')
   })
 
   it('detects the package manager from the lockfile', async () => {
@@ -140,6 +142,7 @@ describe('detectServer', () => {
       mode: 'command',
       command: 'pnpm dev',
       port: 4321,
+      portSource: 'explicit',
       confidence: 'high'
     })
   })
@@ -179,5 +182,16 @@ describe('detectServer', () => {
   it('reports a machine-readable error when no runnable server exists', async () => {
     const cwd = await createFixture({})
     expect(() => detectServer(cwd)).toThrow(expect.objectContaining({ code: 'NO_RUNNABLE_SCRIPT', exitCode: 3 }))
+  })
+
+  it('marks the port of an unknown framework as an estimate', async () => {
+    const cwd = await createFixture({ 'package.json': JSON.stringify({ scripts: { dev: 'node app.mjs' } }) })
+    expect(detectServer(cwd)).toMatchObject({ port: 3000, portSource: 'default' })
+  })
+
+  it('parses a port from an explicit command unless a port override exists', async () => {
+    const cwd = await createFixture({})
+    expect(detectServer(cwd, { command: 'node app.mjs --port 8080' })).toMatchObject({ port: 8080, portSource: 'script' })
+    expect(detectServer(cwd, { command: 'node app.mjs --port 8080', port: 9000 })).toMatchObject({ port: 9000, portSource: 'explicit' })
   })
 })

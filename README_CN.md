@@ -125,6 +125,12 @@ export default defineConfig({
 - `subdomain` 支持模板：`{project}`、`{branch}`、`{rand}`、`{rand:6}`、`{session}`、`{ts}`。
 - 完整字段和默认值见[配置设计](https://github.com/flash-tunnel/flash-tunnel/blob/main/ai-docs/design-docs/06-configuration.md)。
 
+### 服务探测
+
+- 包管理器优先检查应用目录中的 `packageManager` 和 lockfile，然后向上查找到 Git 或 workspace 根目录；就近匹配，构建与启动使用相同规则。
+- 显式设置或从脚本参数解析出的端口会检查冲突。框架与通用默认端口属于估计值：被占用时，flash-tunnel 会启动命令并等待它输出实际本地 URL，不会复用已有监听。如果命令不输出 URL，请通过 `--port` 指定正确端口。
+- 需要主动复用已有服务时，使用 `--reuse`、在端口冲突提示中确认复用，或使用 `--url <url> --attach`。
+
 ### 常用参数
 
 **本地服务**

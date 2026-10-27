@@ -4,7 +4,9 @@ import type { ServerHandle, ServerPlan, StartServerOptions } from './types'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { sleep, stripAnsi } from '@flash-tunnel/utils'
+import { FlashTunnelError } from '../errors'
 import { killProcessTree } from '../process'
+import { isInferredPort, isPortAvailable } from './port'
 import { startStaticServer } from './static'
 
 // Only the origin is useful: cloudflared proxies to a host/port and keeps the
@@ -24,6 +26,11 @@ function normalizeUrl(raw: string): string {
   url.hash = ''
   const output = url.toString()
   return output.endsWith('/') ? output.slice(0, -1) : output
+}
+
+function urlPort(raw: string): number {
+  const url = new URL(raw)
+  return Number(url.port || (url.protocol === 'https:' ? 443 : 80))
 }
 
 async function reachable(url: string): Promise<boolean> {
@@ -59,7 +66,7 @@ async function attachToServer(plan: ServerPlan): Promise<ServerHandle> {
   return {
     plan,
     url,
-    port: Number(new URL(url).port) || plan.port,
+    port: urlPort(url),
     startedByUs: false,
     output: [],
     stop: async () => {}
@@ -69,6 +76,16 @@ async function attachToServer(plan: ServerPlan): Promise<ServerHandle> {
 async function startCommandServer(plan: ServerPlan, options: StartServerOptions): Promise<ServerHandle> {
   if (!plan.command) {
     throw new Error('Command server requires a command')
+  }
+
+  // A guessed port may belong to an unrelated process before our command starts.
+  const portAvailable = plan.port === 0 || await isPortAvailable(plan.port)
+  if (!portAvailable && !isInferredPort(plan)) {
+    throw new FlashTunnelError(`Port ${plan.port} is already in use`, {
+      code: 'PORT_IN_USE',
+      exitCode: 3,
+      hint: 'Stop the other process, select another port, or attach to it explicitly'
+    })
   }
 
   const child = spawn(plan.command, {
@@ -157,15 +174,17 @@ async function startCommandServer(plan: ServerPlan, options: StartServerOptions)
     }
 
     const candidates = new Set<string>()
-    if (detectedUrl) {
+    if (detectedUrl && (portAvailable || urlPort(detectedUrl) !== plan.port)) {
       candidates.add(detectedUrl)
     }
-    candidates.add(`http://127.0.0.1:${plan.port}`)
+    if (portAvailable && plan.port > 0) {
+      candidates.add(`http://127.0.0.1:${plan.port}`)
+    }
 
     for (const candidate of candidates) {
       if (await reachable(candidate)) {
         handle.url = candidate
-        handle.port = Number(new URL(candidate).port) || plan.port
+        handle.port = urlPort(candidate)
         return handle
       }
     }

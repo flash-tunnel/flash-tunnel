@@ -6,6 +6,7 @@ export {
 } from './allowed-hosts'
 export { detectServer, packageManagerFor } from './detect'
 export type { DetectServerOptions } from './detect'
+export { isInferredPort, isPortAvailable } from './port'
 export { startServer } from './run'
 export { startStaticServer } from './static'
 export type {
@@ -13,6 +14,7 @@ export type {
   PackageManager,
   ServerHandle,
   ServerPlan,
+  ServerPortSource,
   StartServerOptions
 } from './types'
 export { detectWorkspaceCandidates } from './workspace'

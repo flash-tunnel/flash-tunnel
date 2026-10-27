@@ -1,5 +1,5 @@
 import type { ServerConfig } from '@flash-tunnel/config'
-import type { Framework, PackageManager, ServerPlan } from './types'
+import type { Framework, PackageManager, ServerPlan, ServerPortSource } from './types'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { FlashTunnelError } from '../errors'
@@ -159,12 +159,29 @@ function createCommand(manager: PackageManager, script: string): string {
   return `${manager} run ${script}`
 }
 
+function resolvePort(explicit: number | undefined, script: string | undefined, framework: number | undefined, fallback: number): {
+  port: number
+  portSource: ServerPortSource
+} {
+  if (explicit !== undefined) {
+    return { port: explicit, portSource: 'explicit' }
+  }
+  const scripted = parsePortFromScript(script)
+  if (scripted !== undefined) {
+    return { port: scripted, portSource: 'script' }
+  }
+  return framework !== undefined
+    ? { port: framework, portSource: 'framework' }
+    : { port: fallback, portSource: 'default' }
+}
+
 function staticPlan(
   cwd: string,
   dir: string,
   port: number,
   framework: Framework,
-  reason: string
+  reason: string,
+  portSource: ServerPortSource
 ): ServerPlan {
   return {
     mode: 'static',
@@ -172,6 +189,7 @@ function staticPlan(
     dir,
     framework,
     port,
+    portSource,
     reason,
     confidence: 'high'
   }
@@ -198,7 +216,7 @@ export function detectServer(
       cwd: workingDirectory,
       command: overrides.command,
       framework: 'unknown',
-      port: overrides.port ?? 3000,
+      ...resolvePort(overrides.port, overrides.command, undefined, 3000),
       reason: 'server.command is configured',
       confidence: 'high'
     }
@@ -213,6 +231,7 @@ export function detectServer(
       url: overrides.url,
       framework: 'unknown',
       port: overrides.port ?? Number(url.port || defaultPort),
+      portSource: overrides.port === undefined ? 'url' : 'explicit',
       reason: 'server.url is configured',
       confidence: 'high'
     }
@@ -224,7 +243,8 @@ export function detectServer(
       resolve(workingDirectory, overrides.dir),
       overrides.port ?? 4173,
       'unknown',
-      'server.dir is configured'
+      'server.dir is configured',
+      overrides.port === undefined ? 'default' : 'explicit'
     )
   }
 
@@ -240,7 +260,8 @@ export function detectServer(
       join(workingDirectory, staticDirectory),
       overrides.port ?? 4173,
       'unknown',
-      `static mode forced (${staticDirectory}/)`
+      `static mode forced (${staticDirectory}/)`,
+      overrides.port === undefined ? 'default' : 'explicit'
     )
   }
 
@@ -260,10 +281,7 @@ export function detectServer(
       packageManager,
       packageManagerSource,
       framework,
-      port: overrides.port
-        ?? parsePortFromScript(scripts.preview)
-        ?? frameworkDefinition?.previewPort
-        ?? 4173,
+      ...resolvePort(overrides.port, scripts.preview, frameworkDefinition?.previewPort, 4173),
       reason: frameworkDefinition
         ? `preview script with build output (${framework})`
         : 'preview script with build output',
@@ -286,10 +304,7 @@ export function detectServer(
       packageManager,
       packageManagerSource,
       framework,
-      port: overrides.port
-        ?? parsePortFromScript(scripts.dev)
-        ?? frameworkDefinition?.devPort
-        ?? 3000,
+      ...resolvePort(overrides.port, scripts.dev, frameworkDefinition?.devPort, 3000),
       reason: scripts.preview
         ? 'preview build output missing, fell back to dev'
         : 'dev script',
@@ -306,10 +321,7 @@ export function detectServer(
       packageManager,
       packageManagerSource,
       framework,
-      port: overrides.port
-        ?? parsePortFromScript(scripts.start)
-        ?? frameworkDefinition?.previewPort
-        ?? 3000,
+      ...resolvePort(overrides.port, scripts.start, frameworkDefinition?.previewPort, 3000),
       reason: 'start script',
       confidence: 'low'
     }
@@ -322,7 +334,8 @@ export function detectServer(
       join(workingDirectory, staticDirectory),
       overrides.port ?? 4173,
       framework,
-      `static build output in ${staticDirectory}/`
+      `static build output in ${staticDirectory}/`,
+      overrides.port === undefined ? 'default' : 'explicit'
     )
   }
 

@@ -1,14 +1,13 @@
 import type { Reporter } from '../ui/reporter'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 import { FlashTunnelError, packageManagerFor } from '@flash-tunnel/core'
 import { shellInvocation } from '@flash-tunnel/utils'
 import { theme } from '../ui/theme'
 
-export { packageManagerFor }
+export { isPortAvailable, packageManagerFor } from '@flash-tunnel/core'
 
 export function runBuildScript(cwd: string, reporter: Reporter): void {
   const packageJson = join(cwd, 'package.json')
@@ -63,16 +62,4 @@ export function runBuildScript(cwd: string, reporter: Reporter): void {
       { code: 'BUILD_FAILED', exitCode: 3, hint: 'Fix the build errors and retry', cause: result.error }
     )
   }
-}
-
-export function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolvePort) => {
-    const server = createServer()
-    server.once('error', () => resolvePort(false))
-    server.once('listening', () => {
-      server.close(() => resolvePort(true))
-    })
-    server.listen(port, '127.0.0.1')
-    server.unref()
-  })
 }
