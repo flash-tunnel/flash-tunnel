@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { detectServer } from '../src'
+import { detectServer, packageManagerFor } from '../src'
 
 const directories: string[] = []
 
@@ -82,6 +82,54 @@ describe('detectServer', () => {
     })
 
     expect(detectServer(cwd).command).toBe('yarn run dev')
+  })
+
+  it.each([
+    ['package.json', JSON.stringify({ packageManager: 'pnpm@12.14.0' })],
+    ['pnpm-lock.yaml', '']
+  ])('inherits the package manager from a parent %s', async (file, content) => {
+    const cwd = await createFixture({
+      '.git': '',
+      [file]: content,
+      'apps/web/package.json': JSON.stringify({ scripts: { dev: 'vite' } })
+    })
+    const app = join(cwd, 'apps/web')
+
+    expect(detectServer(app)).toMatchObject({
+      command: 'pnpm run dev',
+      packageManager: 'pnpm',
+      packageManagerSource: join(cwd, file)
+    })
+    expect(packageManagerFor(app)).toBe('pnpm')
+  })
+
+  it('prefers the nearest package manager over an ancestor declaration', async () => {
+    const cwd = await createFixture({
+      '.git': '',
+      'package.json': JSON.stringify({ packageManager: 'pnpm@12.14.0' }),
+      'apps/web/yarn.lock': '',
+      'apps/web/package.json': JSON.stringify({ scripts: { dev: 'vite' } })
+    })
+
+    expect(detectServer(join(cwd, 'apps/web'))).toMatchObject({
+      packageManager: 'yarn',
+      packageManagerSource: join(cwd, 'apps/web/yarn.lock')
+    })
+  })
+
+  it.each([
+    ['.git', ''],
+    ['pnpm-workspace.yaml', 'packages: []'],
+    ['package.json', JSON.stringify({ workspaces: ['apps/*'] })]
+  ])('does not inherit a manager from above a %s boundary', async (file, content) => {
+    const cwd = await createFixture({
+      'package.json': JSON.stringify({ packageManager: 'bun@1.0.0' }),
+      [`project/${file}`]: content,
+      'project/apps/web/package.json': JSON.stringify({ scripts: { dev: 'vite' } })
+    })
+
+    expect(detectServer(join(cwd, 'project/apps/web'))).toMatchObject({ packageManager: 'npm' })
+    expect(packageManagerFor(join(cwd, 'project/apps/web'))).toBe('npm')
   })
 
   it('uses an explicit command', async () => {

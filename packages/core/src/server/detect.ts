@@ -1,7 +1,7 @@
 import type { ServerConfig } from '@flash-tunnel/config'
 import type { Framework, PackageManager, ServerPlan } from './types'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 interface FrameworkDefinition {
   name: Framework
@@ -40,6 +40,7 @@ interface PackageJson {
   scripts?: Record<string, string>
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
+  workspaces?: unknown
 }
 
 function readPackageJson(cwd: string): PackageJson | undefined {
@@ -56,28 +57,45 @@ function readPackageJson(cwd: string): PackageJson | undefined {
   }
 }
 
-function detectPackageManager(cwd: string, pkg: PackageJson | undefined): PackageManager {
-  const declared = pkg?.packageManager?.split('@')[0]
-  if (declared === 'bun' || declared === 'npm' || declared === 'pnpm' || declared === 'yarn') {
-    return declared
-  }
+function detectPackageManager(cwd: string, pkg: PackageJson | undefined): {
+  manager: PackageManager
+  source?: string
+} {
+  let directory = resolve(cwd)
+  let currentPackage = pkg
 
-  for (const [lockfile, manager] of PACKAGE_MANAGER_BY_LOCKFILE) {
-    if (existsSync(join(cwd, lockfile))) {
-      return manager
+  while (true) {
+    const declared = currentPackage?.packageManager?.split('@')[0]
+    if (declared === 'bun' || declared === 'npm' || declared === 'pnpm' || declared === 'yarn') {
+      return { manager: declared, source: join(directory, 'package.json') }
     }
+
+    for (const [lockfile, manager] of PACKAGE_MANAGER_BY_LOCKFILE) {
+      const source = join(directory, lockfile)
+      if (existsSync(source)) {
+        return { manager, source }
+      }
+    }
+
+    const parent = dirname(directory)
+    if (parent === directory || existsSync(join(directory, '.git'))
+      || existsSync(join(directory, 'pnpm-workspace.yaml')) || currentPackage?.workspaces) {
+      break
+    }
+    directory = parent
+    currentPackage = readPackageJson(directory)
   }
 
-  return 'npm'
+  return { manager: 'npm' }
 }
 
 /**
  * Package manager for a directory, preferring the `packageManager` field and
- * falling back to lockfiles. Detection and `--build` share it so they never
- * spawn different managers for the same project.
+ * falling back to lockfiles in each directory up to the Git or workspace root.
+ * Detection and `--build` share it so they select the same manager.
  */
 export function packageManagerFor(cwd: string): PackageManager {
-  return detectPackageManager(cwd, readPackageJson(cwd))
+  return detectPackageManager(cwd, readPackageJson(cwd)).manager
 }
 
 function detectFramework(pkg: PackageJson | undefined): FrameworkDefinition | undefined {
@@ -226,7 +244,7 @@ export function detectServer(
   }
 
   const pkg = readPackageJson(workingDirectory)
-  const packageManager = detectPackageManager(workingDirectory, pkg)
+  const { manager: packageManager, source: packageManagerSource } = detectPackageManager(workingDirectory, pkg)
   const frameworkDefinition = detectFramework(pkg)
   const framework = frameworkDefinition?.name ?? 'unknown'
   const scripts = pkg?.scripts ?? {}
@@ -239,6 +257,7 @@ export function detectServer(
       command: createCommand(packageManager, 'preview'),
       script: 'preview',
       packageManager,
+      packageManagerSource,
       framework,
       port: overrides.port
         ?? parsePortFromScript(scripts.preview)
@@ -264,6 +283,7 @@ export function detectServer(
       command: createCommand(packageManager, 'dev'),
       script: 'dev',
       packageManager,
+      packageManagerSource,
       framework,
       port: overrides.port
         ?? parsePortFromScript(scripts.dev)
@@ -283,6 +303,7 @@ export function detectServer(
       command: createCommand(packageManager, 'start'),
       script: 'start',
       packageManager,
+      packageManagerSource,
       framework,
       port: overrides.port
         ?? parsePortFromScript(scripts.start)

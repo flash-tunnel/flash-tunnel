@@ -19,6 +19,8 @@ export interface ServerPlan {
   command?: string
   script?: string
   packageManager?: PackageManager
+  /** package.json or lockfile that selected the manager; absent for the npm fallback. */
+  packageManagerSource?: string
   framework: Framework
   port: number
   url?: string
